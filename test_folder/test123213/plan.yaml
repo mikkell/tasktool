@@ -1,0 +1,19 @@
+# Plan: test123213
+id: 88D86DE7-A811-405D-B104-20D7340D06EC
+name: test123213
+color: blue
+created: 2026-01-27T12:42:38Z
+description: 
+statuses:
+  - id: 515041B5-AC99-451D-9C92-625FF33E7B7C
+    name: To Do
+    color: gray
+    order: 0
+  - id: 23CB521D-D99C-451F-AAA1-76B4AF1FD312
+    name: In Progress
+    color: blue
+    order: 1
+  - id: 22F67CE8-963A-4733-96C1-CF2677DEBB68
+    name: Done
+    color: green
+    order: 2

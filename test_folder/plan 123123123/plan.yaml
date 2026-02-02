@@ -1,0 +1,19 @@
+# Plan: plan 123123123
+id: 862D0CCE-CDA3-4B58-B090-3D92F29F72D8
+name: plan 123123123
+color: blue
+created: 2026-01-27T12:46:24Z
+description: 
+statuses:
+  - id: 43804280-521B-4E12-9FA3-301EF653AB01
+    name: To Do
+    color: gray
+    order: 0
+  - id: EEE36D45-BDEC-43BC-948F-39B701C12C60
+    name: In Progress
+    color: blue
+    order: 1
+  - id: B6032D52-9BA0-4171-8057-29AD4835FA6A
+    name: Done
+    color: green
+    order: 2

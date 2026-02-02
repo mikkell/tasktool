@@ -1,0 +1,19 @@
+# Plan: Test Plan
+id: 728B8416-F28B-4322-A899-4A3F80DD1580
+name: Test Plan
+color: blue
+created: 2026-01-27T12:42:38Z
+description: 
+statuses:
+  - id: 24BDB7D7-ACA7-4C3C-B03D-509828D343E7
+    name: To Do
+    color: gray
+    order: 0
+  - id: 26B9E1C0-63F1-467D-83B0-8A90FD74D6B5
+    name: In Progress
+    color: blue
+    order: 1
+  - id: B75D72F7-994A-480E-B63A-F1FDB7DA6C9F
+    name: Done
+    color: green
+    order: 2
