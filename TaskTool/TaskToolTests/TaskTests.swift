@@ -60,9 +60,26 @@ final class TaskTests: XCTestCase {
     
     func testTaskFileNameNormalization() {
         let task = Task(title: "Task   With    Multiple   Spaces", plan: "Work", status: "To Do")
-        let fileName = task.fileName
-        // Should normalize multiple spaces to single hyphens
-        XCTAssertTrue(fileName.contains("task") && fileName.contains("with") && fileName.hasSuffix(".md"))
+        XCTAssertEqual(task.fileName, "task-with-multiple-spaces.md")
+    }
+
+    func testTaskFileNameStripsTrailingDash() {
+        // Trailing space in title must not produce a trailing dash in slug
+        let task = Task(title: "check calendars next week ", plan: "Work", status: "To Do")
+        XCTAssertEqual(task.fileName, "check-calendars-next-week.md")
+    }
+
+    func testTaskFileNameStripsLeadingDash() {
+        // Leading space must not produce a leading dash
+        let task = Task(title: " leading space task", plan: "Work", status: "To Do")
+        XCTAssertEqual(task.fileName, "leading-space-task.md")
+    }
+
+    func testTaskFileNameCollapsesConsecutiveDashes() {
+        // Parentheses surrounded by spaces produce consecutive dashes after removal
+        let task = Task(title: "Fix Bug #123: Error in API", plan: "Work", status: "To Do")
+        XCTAssertEqual(task.fileName, "fix-bug-123-error-in-api.md")
+        XCTAssertFalse(task.fileName.contains("--"), "Should not contain consecutive dashes")
     }
     
     func testTaskEquality() {

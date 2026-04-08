@@ -388,7 +388,8 @@ class TaskStore: ObservableObject {
         let oldTask = tasks[index]
         let oldPlanFolder = storageURL.appendingPathComponent(oldTask.plan)
         let newPlanFolder = storageURL.appendingPathComponent(task.plan)
-        let oldTaskFile = oldPlanFolder.appendingPathComponent(oldTask.fileName)
+        let oldTaskFile = resolveTaskFile(for: oldTask, in: oldPlanFolder)
+            ?? oldPlanFolder.appendingPathComponent(oldTask.fileName)
         let newTaskFile = newPlanFolder.appendingPathComponent(task.fileName)
         
         var updatedTask = task
@@ -424,15 +425,41 @@ class TaskStore: ObservableObject {
         tasks[index] = updatedTask
     }
     
+    /// Resolves the actual on-disk URL for a task file.
+    /// First tries the computed `task.fileName`. If that file doesn't exist (e.g. the slug was
+    /// generated from a title that had trailing whitespace, producing a trailing-dash filename),
+    /// falls back to scanning the plan folder for a `.md` file that contains the task's UUID.
+    private func resolveTaskFile(for task: Task, in folder: URL) -> URL? {
+        let computed = folder.appendingPathComponent(task.fileName)
+        if fileManager.fileExists(atPath: computed.path) { return computed }
+
+        // Fallback: find by UUID (handles slug mismatches from trailing spaces, etc.)
+        let uuidString = task.id.uuidString.uppercased()
+        guard let contents = try? fileManager.contentsOfDirectory(
+            at: folder, includingPropertiesForKeys: nil, options: .skipsHiddenFiles
+        ) else { return nil }
+        for url in contents where url.pathExtension == "md" {
+            if let content = try? String(contentsOf: url, encoding: .utf8),
+               content.contains(uuidString) {
+                return url
+            }
+        }
+        return nil
+    }
+
     func deleteTask(_ task: Task) throws {
         guard let storageURL = storageURL else { return }
-        
+
         let planFolder = storageURL.appendingPathComponent(task.plan)
-        let taskFile = planFolder.appendingPathComponent(task.fileName)
-        
+        guard let taskFile = resolveTaskFile(for: task, in: planFolder) else {
+            // File is already gone — still remove from memory
+            tasks.removeAll { $0.id == task.id }
+            return
+        }
+
         markSaving()
         try fileManager.removeItem(at: taskFile)
-        
+
         tasks.removeAll { $0.id == task.id }
     }
     
@@ -451,7 +478,8 @@ class TaskStore: ObservableObject {
         // Move each done task to the archive folder
         markSaving()
         for task in doneTasks {
-            let currentFile = planFolder.appendingPathComponent(task.fileName)
+            let currentFile = resolveTaskFile(for: task, in: planFolder)
+                ?? planFolder.appendingPathComponent(task.fileName)
             let archivedFile = archiveFolder.appendingPathComponent(task.fileName)
             
             if fileManager.fileExists(atPath: currentFile.path) {

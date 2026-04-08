@@ -45,6 +45,8 @@ struct Task: Identifiable, Codable, Hashable {
             .lowercased()
             .replacingOccurrences(of: " ", with: "-")
             .replacingOccurrences(of: "[^a-z0-9-]", with: "", options: .regularExpression)
+            .replacingOccurrences(of: "-+", with: "-", options: .regularExpression) // collapse runs of dashes
+            .trimmingCharacters(in: CharacterSet(charactersIn: "-"))                 // strip leading/trailing dashes
         // Fall back to a portion of the UUID so the file is never named ".md" (hidden)
         let safeSlug = slug.isEmpty ? id.uuidString.lowercased().prefix(8).description : slug
         return "\(safeSlug).md"
