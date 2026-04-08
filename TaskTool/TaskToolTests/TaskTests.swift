@@ -77,7 +77,26 @@ final class TaskTests: XCTestCase {
     func testTaskIdentifiability() {
         let task1 = Task(title: "Task 1", plan: "Plan", status: "To Do")
         let task2 = Task(title: "Task 2", plan: "Plan", status: "To Do")
-        
         XCTAssertNotEqual(task1.id, task2.id)
+    }
+    
+    func testTaskFileNameEmptySlugFallsBackToUUID() {
+        // Title made entirely of emoji → slug is empty → must not produce ".md"
+        let task = Task(title: "🎉🚀💫", plan: "Work", status: "To Do")
+        XCTAssertNotEqual(task.fileName, ".md", "Empty slug must fall back to UUID, not produce a hidden file")
+        XCTAssertTrue(task.fileName.hasSuffix(".md"))
+        XCTAssertFalse(task.fileName.hasPrefix("."))
+    }
+
+    func testTaskFileNameAllSpecialCharsFallsBackToUUID() {
+        let task = Task(title: "!!!###$$$", plan: "Work", status: "To Do")
+        XCTAssertNotEqual(task.fileName, ".md")
+        XCTAssertFalse(task.fileName.hasPrefix("."))
+    }
+
+    func testTaskFileNameOnlySpacesFallsBackToUUID() {
+        let task = Task(title: "   ", plan: "Work", status: "To Do")
+        XCTAssertNotEqual(task.fileName, ".md")
+        XCTAssertFalse(task.fileName.hasPrefix("."))
     }
 }

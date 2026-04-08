@@ -2,23 +2,24 @@
 
 A powerful, file-based task management application for macOS that stores all data as markdown and YAML files. Perfect for developers, CLI enthusiasts, and anyone who wants their task data in plain text format that's LLM-friendly and git-compatible.
 
-![macOS](https://img.shields.io/badge/macOS-15.2+-blue.svg)
+![macOS](https://img.shields.io/badge/macOS-26.2+-blue.svg)
 ![Swift](https://img.shields.io/badge/Swift-5.0-orange.svg)
 ![SwiftUI](https://img.shields.io/badge/SwiftUI-native-green.svg)
 ![License](https://img.shields.io/badge/license-MIT-lightgrey.svg)
 
 ## ✨ Features
 
-- 📊 **Kanban Board Interface** - Visual task management with customizable status columns
-- 📁 **File-Based Storage** - All data stored as markdown and YAML files
-- 🔄 **Live File Watching** - Auto-reload when files change externally
-- 🎨 **Custom Plans & Statuses** - Organize tasks with color-coded plans and flexible status columns
-- 🏷️ **Tagging System** - Tag tasks for better organization and filtering
-- 📅 **Due Dates** - Track deadlines with optional due date support
-- 🔍 **Drag & Drop** - Intuitive task movement between statuses and plans
-- 💻 **CLI-Friendly** - Direct file access for terminal tools and LLMs
-- 🔗 **Obsidian Compatible** - Full YAML frontmatter compatibility
-- 🚀 **No Database** - No sync issues, no lock-in, just plain text files
+- 📊 **Kanban Board Interface** — Visual task management with drag-and-drop between customisable status columns
+- 📁 **File-Based Storage** — All data stored as markdown and YAML files; no database, no lock-in
+- 🔄 **Live File Watching** — Debounced auto-reload when files change externally (editor, CLI, OneDrive sync)
+- 🎨 **Custom Plans & Statuses** — Color-coded plans, each with fully configurable status columns
+- 🏷️ **Tagging System** — Add tags to tasks for easy search and filtering
+- 📅 **Due Dates** — Optional per-task due dates with a calendar picker
+- 🔍 **Drag & Drop** — Move tasks between status columns and between plans
+- 📦 **Archive** — Move completed tasks to an `Archived/` subfolder with one click
+- 💻 **CLI-Friendly** — All files are plain text; manipulate with `grep`, `sed`, LLMs, or any editor
+- 🔗 **Obsidian Compatible** — Full YAML 1.2 frontmatter compatibility via [Yams](https://github.com/jpsim/Yams)
+- ☁️ **OneDrive / cloud-folder safe** — Hardened file writes and file-watcher debouncing prevent sync conflicts
 
 ## 📋 Table of Contents
 
@@ -30,6 +31,8 @@ A powerful, file-based task management application for macOS that stores all dat
 - [CLI Integration](#cli-integration)
 - [Development](#development)
 - [Testing](#testing)
+- [Troubleshooting](#troubleshooting)
+- [Roadmap](#roadmap)
 - [Contributing](#contributing)
 - [License](#license)
 
@@ -37,7 +40,7 @@ A powerful, file-based task management application for macOS that stores all dat
 
 ### Requirements
 
-- macOS 15.2 or later
+- macOS 26.2 or later
 - Xcode 16.0 or later (for building from source)
 
 ### Building from Source
@@ -50,24 +53,25 @@ cd tasktool/TaskTool
 # Open in Xcode
 open TaskTool.xcodeproj
 
-# Build and run
-# Press ⌘R in Xcode
+# Build and run (⌘R in Xcode)
 ```
 
 ## 🎯 Quick Start
 
 1. **Launch TaskTool**
-2. **Choose a storage folder** - Select where you want your task files stored
-3. **Create a plan** - Click "New Plan" in the sidebar (e.g., "Work", "Personal")
-4. **Add tasks** - Click "New Task" and start organizing!
+2. **Choose a storage folder** — Select any folder (local drive, OneDrive, iCloud Drive, etc.)
+3. **Create a plan** — Click "Create Plan" in the sidebar (e.g., "Work", "Personal")
+4. **Add tasks** — Press **⌘N** or click "New Task" and start organising
 
-Your data structure will look like this:
+Your storage folder will look like this after setup:
+
 ```
 ~/Documents/TaskTool/
-├── settings.yaml
+├── settings.yaml          # Plan order and global settings
 ├── Work/
-│   ├── plan.yaml
-│   └── update-website.md
+│   ├── plan.yaml          # Plan metadata and status columns
+│   ├── update-website.md  # Task file
+│   └── fix-bug.md
 └── Personal/
     ├── plan.yaml
     └── grocery-shopping.md
@@ -77,64 +81,66 @@ Your data structure will look like this:
 
 ### Technology Stack
 
-- **Framework**: SwiftUI (native macOS)
-- **Language**: Swift 5.0
-- **Architecture**: MVVM (Model-View-ViewModel)
-- **Data Layer**: File system (Markdown + YAML)
-- **YAML Parser**: [Yams](https://github.com/jpsim/Yams) 5.1.3+
-- **Concurrency**: Swift Concurrency (@MainActor)
-- **File Watching**: DispatchSourceFileSystemObject
+| Layer | Technology |
+|-------|-----------|
+| Framework | SwiftUI (native macOS) |
+| Language | Swift 5.0 |
+| Architecture | MVVM |
+| Data layer | File system (Markdown + YAML) |
+| YAML parser | [Yams](https://github.com/jpsim/Yams) 5.4.0 |
+| Concurrency | Swift `@MainActor` |
+| File watching | `DispatchSourceFileSystemObject` with 1.5 s debounce |
 
 ### Project Structure
 
 ```
 TaskTool/
 ├── TaskTool/
-│   ├── TaskToolApp.swift          # App entry point
-│   ├── ContentView.swift          # Main Kanban UI
-│   ├── Models/
-│   │   ├── Task.swift             # Task model
-│   │   ├── Plan.swift             # Plan model
-│   │   └── Settings.swift         # Settings model
-│   ├── Services/
-│   │   ├── TaskStore.swift        # State management & file I/O
-│   │   └── MarkdownParser.swift   # Markdown/YAML serialization
+│   ├── TaskToolApp.swift       # App entry point and scene setup
+│   ├── ContentView.swift       # Kanban UI, drag-drop, sheets, alerts
+│   ├── Task.swift              # Task model + fileName slug generation
+│   ├── Plan.swift              # Plan model + TaskStatus subtype
+│   ├── Settings.swift          # Global settings model
+│   ├── TaskStore.swift         # @MainActor state manager & file I/O
+│   ├── MarkdownParser.swift    # Markdown/YAML serialization (Yams)
 │   └── Assets.xcassets/
-├── TaskToolTests/                 # Unit tests
-└── TaskToolUITests/               # UI tests
+├── TaskToolTests/              # 104 unit tests
+└── TaskToolUITests/            # 2 launch tests
 ```
 
 ### Core Components
 
-#### 1. Models
+#### Task (`Task.swift`)
 
-**Task** (`Task.swift`)
 ```swift
 struct Task: Identifiable, Codable, Hashable {
-    let id: UUID
+    let id: UUID          // Stable identity across file renames
     var title: String
-    var plan: String
-    var status: String          // Flexible string-based status
+    var plan: String      // Plan folder name
+    var status: String    // Matches a Plan.TaskStatus.name
     var dueDate: Date?
     var tags: [String]
     var created: Date
-    var updated: Date
-    var body: String            // Markdown body content
+    var updated: Date     // Set automatically on every save
+    var body: String      // Full markdown body content
 }
 ```
 
-**Plan** (`Plan.swift`)
+`Task.fileName` slugifies the title into a safe filesystem name. Titles that produce an empty slug (emoji-only, special-characters-only) fall back to the first 8 characters of the UUID so a hidden `.md` file is never created.
+
+#### Plan (`Plan.swift`)
+
 ```swift
 struct Plan: Identifiable, Codable, Hashable {
     let id: UUID
-    var name: String
-    var color: String
+    var name: String        // Also the folder name on disk
+    var color: String       // "blue" | "green" | "red" | "orange" | "purple" | "yellow" | "gray"
     var created: Date
     var description: String
-    var statuses: [TaskStatus]  // Custom status columns
-    var order: Int              // Display order (from settings.yaml)
-    
-    struct TaskStatus {
+    var statuses: [TaskStatus]   // Ordered status columns
+    var order: Int               // Derived from settings.yaml, not stored in plan.yaml
+
+    struct TaskStatus: Identifiable, Codable, Hashable {
         var id: UUID
         var name: String
         var color: String
@@ -143,124 +149,58 @@ struct Plan: Identifiable, Codable, Hashable {
 }
 ```
 
-**Settings** (`Settings.swift`)
-```swift
-struct Settings: Codable {
-    var planOrder: [String]     // Plan display order
-}
-```
+#### TaskStore (`TaskStore.swift`)
 
-#### 2. TaskStore (State Management)
+The central coordinator — an `@MainActor ObservableObject` that owns all in-memory state and marshals every file operation.
 
-The `TaskStore` is the central coordinator, implemented as an `@MainActor ObservableObject`:
+| Responsibility | Detail |
+|---|---|
+| CRUD | `createPlan`, `updatePlan`, `deletePlan`, `renamePlan`, `createTask`, `updateTask`, `deleteTask`, `archiveDoneTasks` |
+| Persistence | Reads/writes markdown and YAML on every operation; reloads on startup |
+| File watching | `DispatchSourceFileSystemObject` on the storage root, debounced 1.5 s |
+| Conflict prevention | `markSaving()` suppresses file-watcher reloads for 2.5 s after any write |
+| Security bookmarks | Persists access to the user-selected folder across launches; auto-refreshes stale bookmarks |
+| Safe task moves | Writes destination file first, then deletes source — no data loss if the second step fails |
+| Collision guard | If two tasks produce the same filename a UUID suffix is appended to the second |
 
-```swift
-@MainActor
-class TaskStore: ObservableObject {
-    @Published var plans: [Plan]
-    @Published var tasks: [Task]
-    @Published var storageURL: URL?
-    @Published var settings: Settings
-    
-    // Core responsibilities:
-    // 1. Load/save tasks, plans, and settings from/to files
-    // 2. Watch file system for external changes
-    // 3. Provide CRUD operations
-    // 4. Maintain in-memory cache
-    // 5. Handle security-scoped bookmarks
-}
-```
+#### MarkdownParser (`MarkdownParser.swift`)
 
-**Key Features:**
-- **File Watching**: Monitors storage folder using `DispatchSourceFileSystemObject`
-- **Auto-reload**: Detects external file changes and refreshes UI
-- **Security-Scoped Resources**: Maintains sandboxed access to user-selected folder
-- **Conflict Prevention**: Prevents reload during save operations
+Static serialization/deserialisation utility powered by [Yams](https://github.com/jpsim/Yams).
 
-#### 3. MarkdownParser (Serialization)
-
-Handles all file I/O and format conversion using the Yams library:
-
-```swift
-struct MarkdownParser {
-    // Task parsing with YAML frontmatter
-    static func parseTask(from: String, plan: String) throws -> Task
-    static func serializeTask(_ task: Task) -> String
-    
-    // Plan parsing (pure YAML)
-    static func parsePlan(from: String, name: String) throws -> Plan
-    static func serializePlan(_ plan: Plan) -> String
-    
-    // Settings parsing (pure YAML)
-    static func parseSettings(from: String) throws -> Settings
-    static func serializeSettings(_ settings: Settings) -> String
-}
-```
-
-**YAML Frontmatter Parsing:**
-- Uses [Yams](https://github.com/jpsim/Yams) for robust YAML 1.2 parsing
-- Supports inline arrays: `tags: [work, urgent]`
-- Supports multiline arrays
-- Handles special characters, quotes, and edge cases
-- Full Obsidian compatibility
+Notable behaviours:
+- **Yams date handling**: ISO8601 timestamps may be deserialised as native `Date` objects by Yams; the parser handles both `String` and `Date` types transparently.
+- **YAML quoting**: Values containing `:`, `#`, `"`, leading/trailing spaces, `-`, `{`, or `[` are automatically double-quoted on serialisation.
+- **Phantom plan guard**: `loadAllData` only treats a directory as a plan if it contains a `plan.yaml` — stray folders (`.git`, backups, `Archived/`, etc.) are silently skipped.
 
 ### Data Flow
 
 ```
-┌─────────────────┐
-│   ContentView   │  SwiftUI Views
-└────────┬────────┘
-         │ @EnvironmentObject
-         ▼
-┌─────────────────┐
-│   TaskStore     │  State Management
-│  (@MainActor)   │  - Published properties
-└────────┬────────┘  - File watching
-         │
-         ▼
-┌─────────────────┐
-│ MarkdownParser  │  Serialization
-│     (Yams)      │  - Parse/serialize
-└────────┬────────┘  - YAML frontmatter
-         │
-         ▼
-┌─────────────────┐
-│  File System    │  Storage
-│  (Markdown +    │  - Tasks: *.md
-│   YAML files)   │  - Plans: plan.yaml
-└─────────────────┘  - Settings: settings.yaml
+┌────────────────────────┐
+│      ContentView       │  SwiftUI views + drag-drop handlers
+└───────────┬────────────┘
+            │ @EnvironmentObject
+            ▼
+┌────────────────────────┐
+│       TaskStore        │  @MainActor — single source of truth
+│   @Published state     │  file watching · CRUD · bookmarks
+└───────────┬────────────┘
+            │
+            ▼
+┌────────────────────────┐
+│    MarkdownParser      │  Stateless serialisation via Yams
+└───────────┬────────────┘
+            │
+            ▼
+┌────────────────────────┐
+│      File System       │  tasks → *.md
+│   (plain text files)   │  plans → plan.yaml
+│                        │  settings → settings.yaml
+└────────────────────────┘
 ```
-
-### Concurrency Model
-
-- **Main Actor**: All UI updates and file operations run on `@MainActor`
-- **Thread Safety**: Published properties ensure UI consistency
-- **File Watching**: Background file system events dispatch to main queue
-- **No Race Conditions**: Single-threaded state management
 
 ## 💾 Data Storage Format
 
-### Folder Structure
-
-```
-storage_folder/
-├── settings.yaml              # Global settings
-├── Work/                      # Plan folder
-│   ├── plan.yaml              # Plan metadata
-│   ├── task-1.md              # Task file
-│   ├── task-2.md
-│   └── ...
-├── Personal/
-│   ├── plan.yaml
-│   └── ...
-└── Ideas/
-    ├── plan.yaml
-    └── ...
-```
-
-### Task File Format (Markdown with YAML Frontmatter)
-
-**File**: `update-website.md`
+### Task File (Markdown + YAML frontmatter)
 
 ```markdown
 ---
@@ -285,31 +225,16 @@ updated: 2026-02-02T10:30:00Z
 Coordinate with design team on final assets.
 ```
 
-**Supported Frontmatter Formats:**
+Both inline and multiline tag formats are supported:
 
 ```yaml
-# Inline arrays (Obsidian-style)
-tags: [work, urgent, priority]
-
-# Multiline arrays
-tags:
+tags: [work, urgent, priority]   # inline (Obsidian-style)
+tags:                             # multiline
   - work
   - urgent
-  - priority
-
-# Special characters (quoted)
-title: "Meeting: Q1 Planning"
-description: "R&D: Research & Development"
-
-# Multiple data types
-completed: false
-priority: 1
-active: true
 ```
 
-### Plan File Format (Pure YAML)
-
-**File**: `plan.yaml`
+### Plan File (`plan.yaml`)
 
 ```yaml
 # Plan: Work
@@ -317,7 +242,7 @@ id: 728b8416-f28b-4322-a899-4a3f80dd1580
 name: Work
 color: blue
 created: 2026-01-15T08:00:00Z
-description: Tasks related to work projects
+description: Work projects and deliverables
 statuses:
   - id: 24bdb7d7-aca7-4c3c-b03d-509828d343e7
     name: To Do
@@ -333,9 +258,9 @@ statuses:
     order: 2
 ```
 
-### Settings File Format (Pure YAML)
+> Plan display order is managed centrally in `settings.yaml`, not in individual `plan.yaml` files.
 
-**File**: `settings.yaml`
+### Settings File (`settings.yaml`)
 
 ```yaml
 # TaskTool Settings
@@ -345,75 +270,63 @@ plan_order:
   - Ideas
 ```
 
-### File Naming Convention
+### File Naming
 
-- **Tasks**: Slugified from title (e.g., "Update Website" → `update-website.md`)
-- **Plans**: Always `plan.yaml` in plan folder
-- **Settings**: Always `settings.yaml` in root
-- **UUID Tracking**: Files can be renamed; UUIDs in frontmatter maintain identity
+| File | Convention |
+|------|-----------|
+| Task | Title slugified to lowercase-hyphenated (e.g., `update-website.md`). Falls back to first 8 chars of UUID if slug is empty. |
+| Plan | Always `plan.yaml` inside the plan's folder |
+| Settings | Always `settings.yaml` in the storage root |
+
+If two tasks produce the same filename, the second receives a UUID suffix: `duplicate-task-a1b2c3d4.md`.
 
 ## 📖 Usage
 
-### Creating Plans
+### Plans
 
-1. Click "New Plan" button
-2. Enter plan name and choose color
-3. (Optional) Customize status columns
-4. Plan folder is created automatically
+| Action | How |
+|--------|-----|
+| Create | Sidebar → "Create Plan" |
+| Edit name / colour / description | Right-click plan → "Edit…" |
+| Reorder | Drag plans in the sidebar |
+| Delete | Right-click → "Delete" (confirms before deleting all tasks) |
+| Customise statuses | Toolbar → "Edit Statuses" |
 
-### Managing Tasks
+### Tasks
 
-**Create Task:**
-1. Select a plan
-2. Click "New Task"
-3. Enter title and details
-4. Task file is created: `{plan-folder}/{slugified-title}.md`
+| Action | How |
+|--------|-----|
+| Create | **⌘N**, toolbar "New Task" button, or **+** in any column header |
+| Edit | Click a task card to open the detail sheet |
+| Move status | Drag task card to the target column |
+| Move to different plan | Drag task card to the plan name in the sidebar |
+| Delete | Open task detail → "Delete Task" |
+| Archive done tasks | Toolbar → "Archive Done" → moves all Done-status tasks to `{plan}/Archived/` |
 
-**Move Task:**
-- Drag and drop between status columns
-- Drag to different plan in sidebar
-- Status and plan fields update automatically
+### Keyboard Shortcuts
 
-**Edit Task:**
-- Click task card to edit in UI
-- Or edit markdown file directly in your favorite editor
-
-**Tag Tasks:**
-- Add tags in UI or frontmatter
-- Support for inline arrays: `tags: [tag1, tag2]`
-
-### Customizing Status Columns
-
-Each plan can have custom status columns:
-
-1. Edit plan
-2. Add/remove/reorder statuses
-3. Choose colors for each status
-4. Tasks automatically move to new statuses
+| Shortcut | Action |
+|----------|--------|
+| **⌘N** | New task in the selected plan |
+| **⌘S** | Save task (inside the task editor) |
+| **Esc** | Cancel / close current sheet |
 
 ## 💻 CLI Integration
 
-### Direct File Access
-
-All task operations can be performed via CLI:
-
 ```bash
-# Navigate to storage folder
+# Navigate to your storage folder
 cd ~/Documents/TaskTool
 
 # List all plans
 ls -d */
 
-# View all tasks in a plan
-ls Work/
-
 # Read a task
 cat Work/update-website.md
 
-# Create a new task
-cat > Work/new-task.md << 'EOF'
+# Create a new task from the shell
+cat > Work/new-task.md << EOF
 ---
-id: $(uuidgen)
+id: $(uuidgen | tr '[:upper:]' '[:lower:]')
 type: task
 plan: Work
 status: To Do
@@ -425,35 +338,17 @@ updated: $(date -u +"%Y-%m-%dT%H:%M:%SZ")
 Task body content
 EOF
 
-# Search across all tasks
+# Search all tasks
 grep -r "priority" .
 
-# Find tasks by tag
-grep -r "tags:" . | grep "urgent"
+# Find all in-progress tasks
+grep -rl "status: In Progress" .
 
-# List tasks by status
-grep -r "status: In Progress" .
+# Update a task status in-place
+sed -i '' 's/status: To Do/status: Done/' Work/update-website.md
 ```
 
-### LLM Integration
-
-The markdown + YAML format is perfect for LLM interaction:
-
-```bash
-# Let an LLM read all tasks
-cat Work/*.md | llm "Summarize my work tasks"
-
-# Create tasks via LLM
-llm "Create 3 tasks for building a website" | \
-  process_and_save_to_tasktool.sh
-
-# Update task status
-sed -i '' 's/status: To Do/status: Done/' Work/task.md
-```
-
-### Git Integration
-
-Version control your tasks:
+### Git version control
 
 ```bash
 cd ~/Documents/TaskTool
@@ -461,156 +356,139 @@ git init
 git add .
 git commit -m "Initial task snapshot"
 
-# Track changes over time
-git log --oneline
-git diff HEAD~1 Work/important-task.md
+# View history of a single task
+git log --oneline Work/update-website.md
+git diff HEAD~1 Work/update-website.md
 ```
 
 ## 🧪 Development
 
 ### Prerequisites
 
-- macOS 15.2+
+- macOS 26.2+
 - Xcode 16.0+
 - Swift 5.0+
 
 ### Building
 
 ```bash
-cd TaskTool
-open TaskTool.xcodeproj
-
-# Or via command line
 xcodebuild -project TaskTool.xcodeproj \
            -scheme TaskTool \
            -configuration Debug \
            build
 ```
 
-### Dependencies
+### Dependencies (Swift Package Manager)
 
-TaskTool uses Swift Package Manager for dependencies:
-
-- **Yams** (5.1.3+): YAML parsing library
-  - Repository: https://github.com/jpsim/Yams
-  - Purpose: Robust YAML frontmatter parsing
-
-To update dependencies:
-```bash
-# In Xcode: File > Packages > Update to Latest Package Versions
-```
-
-### Project Configuration
-
-**Minimum Deployment**: macOS 15.2
-**Swift Language Version**: 5.0
-**Capabilities Required**:
-- File access (user-selected folder)
-- Security-scoped bookmarks
+| Package | Version | Purpose |
+|---------|---------|---------|
+| [Yams](https://github.com/jpsim/Yams) | 5.4.0 | YAML 1.2 parsing |
 
 ## ✅ Testing
 
 ### Running Tests
 
 ```bash
-# Run all tests
+# All tests
 xcodebuild test \
   -project TaskTool.xcodeproj \
   -scheme TaskTool \
   -destination 'platform=macOS'
 
-# Run specific test suite
+# Unit tests only
 xcodebuild test \
   -project TaskTool.xcodeproj \
   -scheme TaskTool \
   -destination 'platform=macOS' \
-  -only-testing:TaskToolTests/MarkdownParserTests
+  -only-testing:TaskToolTests
+
+# Specific suite
+xcodebuild test \
+  -project TaskTool.xcodeproj \
+  -scheme TaskTool \
+  -destination 'platform=macOS' \
+  -only-testing:TaskToolTests/TaskStoreTests
 ```
 
-### Test Coverage
+### Test Suite (106 tests, 0 failures)
 
-**Unit Tests** (`TaskToolTests/`):
-- ✅ MarkdownParserTests - YAML parsing/serialization
-- ✅ TaskTests - Task model validation
-- ✅ PlanTests - Plan model validation
-- ✅ ColorExtensionTests - Color parsing
-- ✅ TaskStoreTests - State management
+| Suite | Tests | What is covered |
+|-------|-------|-----------------|
+| `TaskStoreTests` | 40 | Full CRUD for plans and tasks, rename, move between plans, archive, reload from disk, phantom-dir guard, filename collision guard, emoji filenames, updated-timestamp |
+| `MarkdownParserTests` | 34 | Parse/serialize task/plan/settings, roundtrips, YAML quoting, Yams native `Date` handling, missing frontmatter error, empty body, multiline body |
+| `TaskCreationTests` | 3 | Task routed to correct plan folder, multi-plan routing, custom status default |
+| `TaskTests` | 10 | Task model properties, fileName slug, UUID fallback for empty/emoji/special-char titles |
+| `PlanTests` | 6 | Plan model, default statuses, custom statuses |
+| `ColorExtensionTests` | 10 | All named colours, case-insensitivity, unknown-colour default |
+| `TaskToolUITests` | 2 | App launch in light mode and dark mode |
+| `TaskToolTests` | 1 | Placeholder |
 
-**UI Tests** (`TaskToolUITests/`):
-- ✅ Launch tests
-- ✅ Basic navigation tests
-
-### Manual Testing
-
-Test files are provided in `test_folder/`:
-- `meeting-q1-planning.md` - Title with colon
-- `inline-tags-test.md` - Inline array format
-- `yams-edge-cases-demo.md` - Comprehensive edge cases
+> **Note for contributors**: Unit tests set `taskStore.storageURL` directly rather than calling `setStorageLocation()`. This is intentional — `setStorageLocation` requires a security-scoped resource (only valid in the sandboxed production app).
 
 ## 🔧 Troubleshooting
 
 ### Files not loading
-- Ensure storage folder has read/write permissions
-- Check that `settings.yaml` exists in root
-- Verify `plan.yaml` exists in each plan folder
+- Ensure the storage folder has read/write permissions.
+- Each plan folder must contain a `plan.yaml` — folders without one are skipped.
+- Confirm `settings.yaml` exists in the root of the storage folder (it is created automatically on first launch).
 
-### Changes not appearing
-- File watcher may need restart (close/reopen folder)
-- Check for YAML syntax errors in frontmatter
-- Ensure file names end with `.md` for tasks
+### Changes not appearing after external edits
+- The file watcher monitors only the root storage directory. Wait ~2 s after saving externally for the debounced reload to fire.
+- Files must have a `.md` extension — other extensions are ignored.
+- Validate YAML frontmatter syntax at [yamllint.com](http://www.yamllint.com/).
 
-### YAML parsing errors
-- Validate YAML syntax at [yamllint.com](http://www.yamllint.com/)
-- Check for proper indentation (2 spaces)
-- Quote strings with special characters
+### Using TaskTool with OneDrive or other cloud folders
+
+TaskTool is designed to work safely with cloud-synced folders:
+
+- **No atomic/temp-file writes** — files are written directly to avoid conflicts when OneDrive has the target file locked during upload.
+- **`isSaving` guard (2.5 s)** — suppresses file-watcher reloads after any write, giving OneDrive time to finish syncing before the app re-reads the folder.
+- **Debounced watcher (1.5 s)** — rapid sync events are coalesced into a single reload, preventing UI flicker.
+- **Safe task moves** — when moving a task between plans the destination file is written first; the source is only deleted after a successful write.
+
+If tasks revert after a status change on a very slow connection, the OneDrive upload may be taking longer than the 2.5 s guard window. This is rare and will self-correct on the next file-system event.
+
+### Plan name collisions
+Plan names must be unique (case-insensitive). The app prevents duplicates when creating or renaming a plan.
+
+### YAML special characters
+Values containing `:`, `#`, `"`, or leading/trailing spaces are automatically quoted by the serialiser. You do not need to quote them manually when editing files in a text editor.
 
 ## 🗺 Roadmap
 
-- [ ] Search and filter functionality
+- [ ] Search and filter tasks across all plans
 - [ ] Task dependencies
 - [ ] Recurring tasks
-- [ ] Export/import (JSON, CSV)
+- [ ] Export (JSON, CSV, Markdown summary)
 - [ ] Custom task templates
-- [ ] Task archiving
-- [ ] Statistics and insights
-- [ ] iCloud sync option
+- [ ] Statistics and insights dashboard
 - [ ] iOS companion app
 
 ## 🤝 Contributing
 
-Contributions are welcome! Please follow these guidelines:
-
 1. Fork the repository
 2. Create a feature branch (`git checkout -b feature/amazing-feature`)
-3. Commit your changes (`git commit -m 'Add amazing feature'`)
-4. Push to the branch (`git push origin feature/amazing-feature`)
-5. Open a Pull Request
+3. Add unit tests for new functionality
+4. Ensure all 106 tests pass
+5. Commit with a descriptive message
+6. Open a Pull Request
 
-### Code Style
-
+### Code style guidelines
 - Follow Swift API Design Guidelines
-- Use SwiftUI best practices
-- Maintain MVVM architecture
-- Add unit tests for new features
-- Update documentation
+- Keep business logic in `TaskStore`, UI logic in views (MVVM)
+- Call `markSaving()` before every file write so the watcher doesn't reload mid-operation
+- Use `atomically: false` for all `String.write(to:)` calls (required for cloud-folder compatibility)
+- Add `@testable import TaskTool` and write unit tests for new model or store methods
 
 ## 📄 License
 
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+This project is licensed under the MIT License — see the [LICENSE](LICENSE) file for details.
 
 ## 🙏 Acknowledgments
 
-- [Yams](https://github.com/jpsim/Yams) - YAML parser for Swift
-- [Obsidian](https://obsidian.md) - Inspiration for YAML frontmatter format
-- SwiftUI community for excellent resources
-
-## 📧 Contact
-
-For questions, issues, or suggestions:
-- Open an issue on GitHub
-- Email: [your-email@example.com]
+- [Yams](https://github.com/jpsim/Yams) — YAML parser for Swift
+- [Obsidian](https://obsidian.md) — Inspiration for the YAML frontmatter format
 
 ---
 
-**Made with ❤️ and SwiftUI**
-
+*Made with ❤️ and SwiftUI*

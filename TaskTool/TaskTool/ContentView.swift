@@ -31,6 +31,8 @@ struct ContentView: View {
     @State private var showingNewTask = false
     @State private var editingPlan: Plan?
     @State private var planToDelete: Plan?
+    @State private var deleteErrorMessage = ""
+    @State private var showingDeleteError = false
 
     var body: some View {
         if taskStore.storageURL == nil {
@@ -157,9 +159,14 @@ struct ContentView: View {
                 }
                 Button("Delete", role: .destructive) {
                     if let plan = planToDelete {
-                        try? taskStore.deletePlan(plan)
-                        if selectedPlan?.id == plan.id {
-                            selectedPlan = nil
+                        do {
+                            try taskStore.deletePlan(plan)
+                            if selectedPlan?.id == plan.id {
+                                selectedPlan = nil
+                            }
+                        } catch {
+                            deleteErrorMessage = "Failed to delete '\(plan.name)': \(error.localizedDescription)"
+                            showingDeleteError = true
                         }
                         planToDelete = nil
                     }
@@ -168,6 +175,11 @@ struct ContentView: View {
                 if let plan = planToDelete {
                     Text("Are you sure you want to delete '\(plan.name)'? This will delete all tasks in this plan.")
                 }
+            }
+            .alert("Error", isPresented: $showingDeleteError) {
+                Button("OK", role: .cancel) {}
+            } message: {
+                Text(deleteErrorMessage)
             }
         }
     }
@@ -199,6 +211,7 @@ struct ContentView: View {
             DispatchQueue.main.async {
                 if let taskIndex = taskStore.tasks.firstIndex(where: { $0.id == taskId }) {
                     var task = taskStore.tasks[taskIndex]
+                    let originalTask = task
                     
                     // Only update if plan changed
                     if task.plan != targetPlan.name {
@@ -211,12 +224,18 @@ struct ContentView: View {
                             // Map to the first status in the new plan if no match
                             if let firstStatus = targetPlan.statuses.sorted(by: { $0.order < $1.order }).first {
                                 task.status = firstStatus.name
-                                print("🔄 Task status changed from '\(taskStore.tasks[taskIndex].status)' to '\(firstStatus.name)'")
+                                print("🔄 Task status changed from '\(originalTask.status)' to '\(firstStatus.name)'")
                             }
                         }
                         
-                        try? taskStore.updateTask(task)
-                        print("📦 Task '\(task.title)' moved to plan '\(targetPlan.name)'")
+                        do {
+                            try taskStore.updateTask(task)
+                            print("📦 Task '\(task.title)' moved to plan '\(targetPlan.name)'")
+                        } catch {
+                            // Revert in-memory state so the UI stays consistent with disk
+                            taskStore.tasks[taskIndex] = originalTask
+                            print("❌ Failed to move task '\(task.title)': \(error.localizedDescription)")
+                        }
                     }
                 }
             }
@@ -423,8 +442,15 @@ struct KanbanColumn: View {
                     
                     // Only update if status changed
                     if task.status != statusName {
+                        let originalTask = task
                         task.status = statusName
-                        try? taskStore.updateTask(task)
+                        do {
+                            try taskStore.updateTask(task)
+                        } catch {
+                            // Revert in-memory state so the UI stays consistent with disk
+                            taskStore.tasks[taskIndex] = originalTask
+                            print("❌ Failed to update status for '\(task.title)': \(error.localizedDescription)")
+                        }
                     }
                 }
             }
@@ -530,6 +556,11 @@ struct NewPlanView: View {
                 .keyboardShortcut(.cancelAction)
                 
                 Button("Create") {
+                    if taskStore.plans.contains(where: { $0.name.lowercased() == name.lowercased() }) {
+                        errorMessage = "A plan named '\(name)' already exists"
+                        showError = true
+                        return
+                    }
                     let plan = Plan(name: name, color: color, description: description)
                     do {
                         try taskStore.createPlan(plan)
@@ -595,8 +626,9 @@ struct NewTaskView: View {
                                         .stroke(Color.gray.opacity(0.5), lineWidth: 1)
                                 )
                             Button("Add") {
-                                if !tagInput.isEmpty {
-                                    tags.append(tagInput)
+                                let trimmed = tagInput.trimmingCharacters(in: .whitespaces)
+                                if !trimmed.isEmpty && !tags.contains(trimmed) {
+                                    tags.append(trimmed)
                                     tagInput = ""
                                 }
                             }
@@ -726,8 +758,9 @@ struct NewTaskViewForStatus: View {
                                         .stroke(Color.gray.opacity(0.5), lineWidth: 1)
                                 )
                             Button("Add") {
-                                if !tagInput.isEmpty {
-                                    tags.append(tagInput)
+                                let trimmed = tagInput.trimmingCharacters(in: .whitespaces)
+                                if !trimmed.isEmpty && !tags.contains(trimmed) {
+                                    tags.append(trimmed)
                                     tagInput = ""
                                 }
                             }
@@ -826,7 +859,7 @@ struct TaskDetailView: View {
     @State private var hasDueDate: Bool
     
     var plan: Plan? {
-        taskStore.plans.first(where: { $0.name == task.plan })
+        taskStore.plans.first(where: { $0.name == editedTask.plan })
     }
     
     init(task: Task) {
@@ -914,8 +947,9 @@ struct TaskDetailView: View {
                             TextField("Add tag", text: $newTag)
                                 .textFieldStyle(.roundedBorder)
                             Button("Add") {
-                                if !newTag.isEmpty {
-                                    editedTask.tags.append(newTag)
+                                let trimmed = newTag.trimmingCharacters(in: .whitespaces)
+                                if !trimmed.isEmpty && !editedTask.tags.contains(trimmed) {
+                                    editedTask.tags.append(trimmed)
                                     newTag = ""
                                 }
                             }
@@ -1132,7 +1166,7 @@ struct EditStatusesView: View {
     }
     
     private func addStatus() {
-        let newOrder = editedStatuses.map { $0.order }.max() ?? -1 + 1
+        let newOrder = (editedStatuses.map { $0.order }.max() ?? -1) + 1
         let newStatus = Plan.TaskStatus(
             name: "New Status",
             color: "blue",

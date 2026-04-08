@@ -1,196 +1,344 @@
 # TaskTool Test Suite Documentation
 
 ## Overview
-Comprehensive test suite for the TaskTool macOS app covering all major functionality including models, file operations, parsing, and UI workflows.
+
+Comprehensive test suite for the TaskTool macOS application covering all major functionality: models, file system operations, markdown/YAML parsing, integration workflows, and UI launch verification.
 
 ## Test Statistics
-- **Total Test Files**: 7
-- **Unit Test Files**: 6
-- **UI Test Files**: 1
-- **Estimated Test Cases**: 40+
-- **Test Coverage Areas**: Models, Parsing, Storage, UI, Integration
+
+| Metric | Value |
+|--------|-------|
+| **Total test files** | 7 |
+| **Unit test files** | 6 |
+| **UI test files** | 1 |
+| **Total test cases** | 106 |
+| **Failures** | 0 |
 
 ## Unit Tests
 
-### 1. PlanTests.swift
-Tests for the Plan model and related functionality.
+### 1. `TaskStoreTests.swift` — 50 tests
 
-**Test Cases:**
-- `testPlanInitialization()` - Verifies plan creation with default values
-- `testPlanDefaultStatuses()` - Validates the three default statuses (To Do, In Progress, Done)
-- `testPlanFolderName()` - Checks folder name generation
-- `testPlanCustomStatuses()` - Tests custom status configurations
-- `testTaskStatusEquality()` - Validates status comparison
-- `testPlanEquality()` - Tests plan equality based on ID
+Integration tests for all `TaskStore` file-system operations.
 
-### 2. TaskTests.swift
-Tests for the Task model and properties.
+**setUp pattern:**
+```swift
+override func setUp() async throws {
+    try await super.setUp()
+    taskStore = TaskStore()
+    tempDir = URL(fileURLWithPath: NSTemporaryDirectory())
+        .appendingPathComponent(UUID().uuidString)
+    try FileManager.default.createDirectory(at: tempDir, ...)
+    taskStore.storageURL = tempDir   // ← direct assignment, not setStorageLocation()
+    taskStore.loadAllData()
+}
+```
 
-**Test Cases:**
-- `testTaskInitialization()` - Basic task creation
-- `testTaskWithFullDetails()` - Task with all optional fields
-- `testTaskFileName()` - File name generation from title
-- `testTaskFileNameWithSpecialCharacters()` - File name sanitization
-- `testTaskFileNameNormalization()` - Handles multiple spaces and special chars
-- `testTaskEquality()` - Task comparison based on ID
-- `testTaskIdentifiability()` - Unique ID generation
+> **Why `storageURL` is set directly:** `setStorageLocation()` calls `url.startAccessingSecurityScopedResource()`, which returns `false` in the non-sandboxed unit-test environment, causing it to bail without setting `storageURL`. Tests must bypass this by assigning the URL directly.
 
-### 3. MarkdownParserTests.swift
-Tests for markdown parsing and serialization.
+**Plan operations (8 tests):**
 
-**Test Cases:**
-- `testParseSimpleTask()` - Parse basic task from markdown
-- `testParseTaskWithTags()` - Parse tasks with tag arrays
-- `testParseTaskWithDueDate()` - Parse tasks with due dates
-- `testSerializeTask()` - Convert Task model to markdown
-- `testParsePlan()` - Parse plan from markdown with statuses
-- `testSerializePlan()` - Convert Plan model to markdown
+| Test | What is verified |
+|------|-----------------|
+| `testCreatePlanWritesPlanYaml` | `plan.yaml` is written to disk on plan creation |
+| `testCreatePlanAddsToPlansArray` | In-memory `plans` array is updated |
+| `testCreateMultiplePlans` | Multiple plans coexist correctly |
+| `testCreatePlanUpdatesSettingsOrder` | `settings.yaml` is written with the new plan's name |
+| `testCreatePlanAssignsIncrementingOrder` | Each new plan gets a sequential `order` value |
+| `testUpdatePlanWritesChangesToFile` | Edited plan properties are persisted to `plan.yaml` |
+| `testUpdatePlanReflectsInMemory` | In-memory `plans` array reflects edits immediately |
+| `testDeletePlanRemovesFolderFromDisk` | Plan folder is removed from the file system |
+| `testDeletePlanRemovesFromPlansArray` | In-memory `plans` array is updated |
+| `testDeletePlanRemovesItsTasksFromArray` | In-memory `tasks` for the plan are removed |
+| `testDeletePlanRemovesFromSettingsPlanOrder` | `settings.yaml` no longer lists the deleted plan |
 
-### 4. TaskStoreTests.swift
-Comprehensive tests for file system operations and data management.
+**Plan rename operations (5 tests):**
 
-**Test Cases:**
-- `testCreatePlan()` - Create plan folder and file
-- `testUpdatePlan()` - Update existing plan metadata
-- `testDeletePlan()` - Remove plan and all tasks
-- `testRenamePlan()` - Rename plan folder and update tasks
-- `testCreateTask()` - Create task file in plan folder
-- `testUpdateTask()` - Modify existing task
-- `testDeleteTask()` - Remove task file
-- `testMoveTaskBetweenPlans()` - Move task file between folders
-- `testArchiveDoneTasks()` - Archive completed tasks to subfolder
-- `testLoadAllData()` - Load plans and tasks from disk
-- `testPlanOrderAssignment()` - Verify sequential order assignment
+| Test | What is verified |
+|------|-----------------|
+| `testRenamePlanRenamesFolderOnDisk` | Folder is renamed on the file system |
+| `testRenamePlanUpdatesInMemoryPlanName` | In-memory plan name is updated |
+| `testRenamePlanUpdatesTaskPlanField` | All tasks that referenced the old name are updated |
+| `testRenamePlanMovesTaskFilesToNewFolder` | Task `.md` files are moved to the new folder |
+| `testRenamePlanUpdatesSettingsPlanOrder` | `settings.yaml` reflects the new name |
 
-**Features Tested:**
-- Temporary directory setup/teardown for isolated testing
-- File creation and validation
-- Folder operations (create, rename, delete)
-- Data persistence verification
-- Archive folder creation
-- In-memory state management
+**Task CRUD operations (12 tests):**
 
-### 5. ColorExtensionTests.swift
-Tests for the Color extension utility.
+| Test | What is verified |
+|------|-----------------|
+| `testCreateTaskWritesMarkdownFile` | `.md` file is created on disk |
+| `testCreateTaskAddsToTasksArray` | In-memory `tasks` array is updated |
+| `testCreateTaskInCorrectPlanFolder` | File is written inside the right plan subfolder |
+| `testCreateTaskInNonExistentPlanThrows` | Error thrown when target plan does not exist |
+| `testCreateTaskFileContainsFrontmatter` | Written file contains `---` YAML frontmatter block |
+| `testCreateTaskFilenameCollisionKeepsBothFiles` | Second task with identical slug gets a UUID-suffix filename |
+| `testCreateTaskWithEmojiTitleDoesNotCreateHiddenFile` | Emoji-only titles fall back to UUID prefix, avoiding `.md` hidden file |
+| `testUpdateTaskStatusWritesToFile` | Updated status is persisted to disk |
+| `testUpdateTaskStatusReflectsInMemory` | In-memory `tasks` array reflects the status change |
+| `testUpdateTaskMoveToNewPlan_NewFileExists` | After cross-plan move, file exists in destination folder |
+| `testUpdateTaskMoveToNewPlan_OldFileGone` | After cross-plan move, old file is deleted |
+| `testUpdateTaskMoveToNewPlan_InMemoryPlanUpdated` | In-memory task has updated `plan` field |
+| `testUpdateTaskTitleRenamesFile` | Renaming a task's title renames the `.md` file |
+| `testUpdateTaskSetsUpdatedTimestamp` | `updated` timestamp is always later than or equal to `created` |
+| `testDeleteTaskRemovesFileFromDisk` | `.md` file is deleted |
+| `testDeleteTaskRemovesFromTasksArray` | In-memory `tasks` array is updated |
+| `testDeleteNonExistentTaskFileThrows` | Deleting a task whose file is already gone throws an error |
 
-**Test Cases:**
-- `testColorFromStringBlue()` - Blue color mapping
-- `testColorFromStringGreen()` - Green color mapping
-- `testColorFromStringRed()` - Red color mapping
-- `testColorFromStringOrange()` - Orange color mapping
-- `testColorFromStringPurple()` - Purple color mapping
-- `testColorFromStringYellow()` - Yellow color mapping
-- `testColorFromStringGray()` - Gray color mapping
-- `testColorFromStringCaseInsensitive()` - Case insensitivity
-- `testColorFromStringInvalid()` - Default fallback behavior
-- `testColorFromStringEmpty()` - Empty string handling
+**Archive operations (3 tests):**
 
-### 6. TaskToolTests.swift
-Placeholder test file (from Xcode template).
+| Test | What is verified |
+|------|-----------------|
+| `testArchiveTasksMovesFileToArchivedSubfolder` | Done task file moves to `{plan}/Archived/` |
+| `testArchiveTasksRemovesFromTasksArray` | Archived tasks are removed from the active `tasks` array |
+| `testArchiveCreatesArchivedFolderIfMissing` | `Archived/` subdirectory is created automatically |
+
+**Persistence / reload (6 tests):**
+
+| Test | What is verified |
+|------|-----------------|
+| `testLoadAllDataLoadsSavedPlans` | Plans written in a previous session are loaded correctly |
+| `testLoadAllDataLoadsSavedTasks` | Tasks written in a previous session are loaded correctly |
+| `testLoadAllDataPreservesPlanOrder` | `plan_order` from `settings.yaml` is respected |
+| `testLoadAllDataSkipsDirectoriesWithoutPlanYaml` | Stray directories (`.git`, backups, etc.) are ignored |
+| `testLoadAllDataDoesNotLoadArchivedTasksAsPlanTasks` | Files inside `Archived/` are not loaded as active tasks |
+| `testSaveAndLoadSettings` | `settings.yaml` round-trips correctly |
+| `testSettingsFileCreatedOnFirstLoad` | `settings.yaml` is created on first `loadAllData()` call |
+
+---
+
+### 2. `MarkdownParserTests.swift` — 34 tests
+
+Unit tests for the static `MarkdownParser` serialiser/deserialiser.
+
+**Task parsing (8 tests):**
+
+| Test | What is verified |
+|------|-----------------|
+| `testParseSimpleTask` | Minimal frontmatter parses to a valid `Task` |
+| `testParseTaskWithTags` | Multiline `tags:` array is parsed correctly |
+| `testParseTaskWithDueDate` | `due_date` field is parsed as `Date` |
+| `testParseTaskPreservesUUID` | `id` field parses to the exact original UUID |
+| `testParseTaskMissingFrontmatterThrows` | Missing `---` delimiters throw a `ParseError` |
+| `testParseTaskMultilineBody` | Multi-section markdown body is preserved verbatim |
+| `testParseTaskEmptyBodyIsAllowed` | Task with no body content is valid |
+
+**Task serialisation (5 tests):**
+
+| Test | What is verified |
+|------|-----------------|
+| `testSerializeTask` | Task model renders correct YAML frontmatter |
+| `testSerializeTaskIncludesDueDate` | `due_date` is emitted when set |
+| `testSerializeTaskOmitsDueDateWhenNil` | `due_date` field is omitted when `nil` |
+| `testSerializeTaskOmitsTagsWhenEmpty` | `tags:` block is omitted when the array is empty |
+| `testRoundtripTask` | Serialize → parse produces an identical `Task` |
+| `testRoundtripTaskWithDueDate` | Roundtrip with a `due_date` preserves the date |
+
+**Plan parsing / serialisation (7 tests):**
+
+| Test | What is verified |
+|------|-----------------|
+| `testParsePlan` | Full `plan.yaml` parses to correct `Plan` model |
+| `testParsePlanUsesDefaultStatusesWhenMissing` | Plan without `statuses:` gets 3 default statuses |
+| `testParsePlanInvalidYamlThrows` | Garbage input throws a `ParseError` |
+| `testSerializePlan` | Plan model renders correct YAML |
+| `testSerializePlanOmitsOrderField` | `order` is **not** written to `plan.yaml` (stored in `settings.yaml`) |
+| `testRoundtripPlan` | Serialize → parse produces an identical `Plan` |
+
+**YAML quoting (8 tests):**
+
+| Test | What is verified |
+|------|-----------------|
+| `testYamlQuotingAppliedForColonInPlanName` | Plan name with `:` is double-quoted |
+| `testYamlQuotingAppliedForHashInDescription` | Description with `#` is double-quoted |
+| `testYamlQuotingAppliedForEmptyDescription` | Empty string is double-quoted |
+| `testYamlQuotingNotAppliedForNormalStrings` | Normal strings are written without quotes |
+| `testQuotedPlanNameSurvivesRoundtrip` | Quoted name parses back to the original unquoted string |
+| `testYamlQuotingAppliedForStatusNameWithColon` | Status names with `:` are double-quoted |
+| `testYamlQuotingForSettingsPlanOrder` | Plan names in `settings.yaml` are quoted if needed |
+
+**Settings (4 tests):**
+
+| Test | What is verified |
+|------|-----------------|
+| `testParseSettings` | `settings.yaml` parses to correct `Settings` model |
+| `testParseEmptySettings` | Empty YAML produces default `Settings` |
+| `testSerializeSettings` | Settings model renders correct YAML |
+| `testRoundtripSettings` | Serialize → parse produces identical `Settings` |
+
+> **Yams date-type quirk:** Yams 5.x deserialises ISO8601 timestamps as native Swift `Date` objects, not `String`. All `metadata["due_date"] as? String` style casts would silently return `nil`. Both `parseTask` and `parsePlan` handle this with a dual-type check — try `as? String` first, then `as? Date` as fallback. The Yams date roundtrip tests verify this behaviour.
+
+---
+
+### 3. `TaskCreationTests.swift` — 3 tests
+
+Integration tests focusing specifically on task creation routing.
+
+| Test | What is verified |
+|------|-----------------|
+| `testTaskIsCreatedInSelectedPlan` | New task file is placed in the correct plan folder |
+| `testTaskCreatedInCorrectPlanWhenMultiplePlansExist` | Task routes to the right folder when many plans exist |
+| `testTaskCreatedWithDefaultStatusFromPlan` | New task receives the first status from the plan's `statuses` array |
+
+---
+
+### 4. `TaskTests.swift` — 10 tests
+
+Unit tests for the `Task` model.
+
+| Test | What is verified |
+|------|-----------------|
+| `testTaskInitialization` | Task created with default values |
+| `testTaskWithFullDetails` | Task created with all optional fields populated |
+| `testTaskFileName` | Normal title slugifies to a hyphenated lowercase filename |
+| `testTaskFileNameWithSpecialCharacters` | Special characters are stripped from the slug |
+| `testTaskFileNameNormalization` | Multiple spaces and mixed casing are normalised |
+| `testTaskEquality` | Two tasks with the same UUID are equal |
+| `testTaskIdentifiability` | Newly created tasks have distinct UUIDs |
+| `testTaskFileNameEmptySlugFallsBackToUUID` | Title that slugifies to empty string uses UUID prefix |
+| `testTaskFileNameAllSpecialCharsFallsBackToUUID` | All-special-char title uses UUID prefix (no `.md` hidden file) |
+| `testTaskFileNameOnlySpacesFallsBackToUUID` | Whitespace-only title uses UUID prefix |
+
+---
+
+### 5. `PlanTests.swift` — 6 tests
+
+Unit tests for the `Plan` model.
+
+| Test | What is verified |
+|------|-----------------|
+| `testPlanInitialization` | Plan created with correct defaults |
+| `testPlanDefaultStatuses` | Default plan ships with 3 statuses: To Do, In Progress, Done |
+| `testPlanFolderName` | `name` is used directly as the folder name |
+| `testPlanCustomStatuses` | Plans support any number of custom statuses |
+| `testTaskStatusEquality` | `TaskStatus` equality is based on UUID |
+| `testPlanEquality` | `Plan` equality is based on UUID |
+
+---
+
+### 6. `ColorExtensionTests.swift` — 10 tests
+
+Unit tests for the `Color` extension that maps string names to SwiftUI `Color` values.
+
+| Test | What is verified |
+|------|-----------------|
+| `testColorFromStringBlue` | `"blue"` → `.blue` |
+| `testColorFromStringGreen` | `"green"` → `.green` |
+| `testColorFromStringRed` | `"red"` → `.red` |
+| `testColorFromStringOrange` | `"orange"` → `.orange` |
+| `testColorFromStringPurple` | `"purple"` → `.purple` |
+| `testColorFromStringYellow` | `"yellow"` → `.yellow` |
+| `testColorFromStringGray` | `"gray"` → `.gray` |
+| `testColorFromStringCaseInsensitive` | `"BLUE"` / `"Blue"` work correctly |
+| `testColorFromStringInvalid` | Unknown string falls back to `.gray` |
+| `testColorFromStringEmpty` | Empty string falls back to `.gray` |
+
+---
 
 ## UI Tests
 
-### TaskToolUITests.swift
-End-to-end UI workflow tests.
+### `TaskToolUITestsLaunchTests.swift` — 2 tests (launch × 2 configurations)
 
-**Test Cases:**
-- `testAppLaunches()` - Verify app launches successfully
-- `testCreatePlanFlow()` - Complete plan creation workflow
-- `testCreateTaskFlow()` - Complete task creation workflow
-- `testEditStatusesButton()` - Status editor accessibility
-- `testArchiveButton()` - Archive functionality presence
-- `testLaunchPerformance()` - App launch performance metrics
+| Test | What is verified |
+|------|-----------------|
+| `testLaunch` | App launches and takes a screenshot in each UI configuration (light mode, dark mode) |
 
-**Note**: UI tests require storage location to be pre-configured.
+> The launch test runs once per UI configuration because `runsForEachTargetApplicationUIConfiguration` returns `true`.
 
-## Running Tests
+---
 
-### Run All Tests
+## Running the Tests
+
+### All tests
+
 ```bash
 cd TaskTool
-xcodebuild test -project TaskTool.xcodeproj -scheme TaskTool -destination 'platform=macOS'
+xcodebuild test \
+  -project TaskTool.xcodeproj \
+  -scheme TaskTool \
+  -destination 'platform=macOS'
 ```
 
-### Run Only Unit Tests
-```bash
-xcodebuild test -project TaskTool.xcodeproj -scheme TaskTool \
-  -destination 'platform=macOS' -only-testing:TaskToolTests
-```
+### Unit tests only
 
-### Run Only UI Tests
 ```bash
-xcodebuild test -project TaskTool.xcodeproj -scheme TaskTool \
-  -destination 'platform=macOS' -only-testing:TaskToolUITests
-```
-
-### Run Specific Test Class
-```bash
-xcodebuild test -project TaskTool.xcodeproj -scheme TaskTool \
-  -destination 'platform=macOS' -only-testing:TaskToolTests/PlanTests
-```
-
-### Run Specific Test Method
-```bash
-xcodebuild test -project TaskTool.xcodeproj -scheme TaskTool \
+xcodebuild test \
+  -project TaskTool.xcodeproj \
+  -scheme TaskTool \
   -destination 'platform=macOS' \
-  -only-testing:TaskToolTests/TaskStoreTests/testArchiveDoneTasks
+  -only-testing:TaskToolTests
 ```
 
-## Test Coverage
+### UI tests only
 
-### Covered Functionality
-✅ Plan creation, modification, deletion, renaming  
-✅ Task creation, modification, deletion  
-✅ Markdown parsing and serialization  
-✅ YAML frontmatter handling  
-✅ File system operations (CRUD)  
-✅ Task movement between plans  
-✅ Archive functionality  
-✅ Status management  
-✅ Color mapping  
-✅ File naming and sanitization  
-✅ Data persistence  
-✅ Folder operations  
-✅ UI workflows  
-✅ Launch performance  
+```bash
+xcodebuild test \
+  -project TaskTool.xcodeproj \
+  -scheme TaskTool \
+  -destination 'platform=macOS' \
+  -only-testing:TaskToolUITests
+```
 
-### Not Covered (Future Enhancements)
-- Drag-and-drop between columns (complex UI testing)
-- File watching and auto-reload
-- Concurrent file modifications
-- Network/OneDrive sync edge cases
+### Specific test class
+
+```bash
+xcodebuild test \
+  -project TaskTool.xcodeproj \
+  -scheme TaskTool \
+  -destination 'platform=macOS' \
+  -only-testing:TaskToolTests/TaskStoreTests
+```
+
+### Specific test method
+
+```bash
+xcodebuild test \
+  -project TaskTool.xcodeproj \
+  -scheme TaskTool \
+  -destination 'platform=macOS' \
+  -only-testing:TaskToolTests/TaskStoreTests/testArchiveTasksMovesFileToArchivedSubfolder
+```
+
+---
+
+## Coverage Summary
+
+### Covered
+
+✅ Plan CRUD (create, read, update, delete, rename)  
+✅ Task CRUD (create, read, update, delete)  
+✅ Cross-plan task moves (write destination first, then delete source)  
+✅ Task archiving to `Archived/` subfolder  
+✅ Markdown parsing with YAML frontmatter  
+✅ Plan YAML serialisation/deserialisation  
+✅ Settings YAML serialisation/deserialisation  
+✅ Yams native `Date` type handling (ISO8601 round-trip)  
+✅ YAML quoting for special characters  
+✅ Filename collision resolution (UUID suffix)  
+✅ Emoji/special-char title fallback to UUID filename  
+✅ Phantom directory guard (non-plan folders skipped)  
+✅ `Archived/` subfolder excluded from active task load  
+✅ Settings persistence and plan order  
+✅ Color mapping (all named colors, case-insensitivity, unknown fallback)  
+✅ App launch (light mode + dark mode)  
+
+### Not yet covered
+
+- File-watcher debounce behaviour (requires real filesystem timing)
+- `markSaving()` / concurrent-write suppression
+- Drag-and-drop between columns (complex UI)
+- OneDrive/iCloud sync edge cases
+- Security-scoped bookmark refresh
 - Large dataset performance
-- Memory leak detection
-- Security/entitlements edge cases
 
-## Test Best Practices
+---
 
-### Unit Tests
-- Use temporary directories for file operations
-- Clean up after each test (tearDown)
-- Test one thing per test method
-- Use descriptive test names
-- Mock external dependencies when possible
-
-### UI Tests
-- Start with clean state
-- Use accessibility identifiers
-- Handle asynchronous operations with timeouts
-- Test happy paths and error states
-- Avoid brittle coordinate-based interactions
-
-## Continuous Integration
-
-The test suite can be integrated into CI/CD pipelines:
+## CI Integration
 
 ```bash
 #!/bin/bash
-# CI test script
 set -e
 
 cd TaskTool
 
-# Run tests with code coverage
 xcodebuild test \
   -project TaskTool.xcodeproj \
   -scheme TaskTool \
@@ -198,37 +346,27 @@ xcodebuild test \
   -enableCodeCoverage YES \
   | xcpretty --test --color
 
-# Check for test failures
 if [ ${PIPESTATUS[0]} -ne 0 ]; then
   echo "Tests failed!"
   exit 1
 fi
+
+echo "All 106 tests passed."
 ```
 
-## Maintenance
+---
 
-### Adding New Tests
-1. Create test file in appropriate folder (TaskToolTests/ or TaskToolUITests/)
-2. Import XCTest and @testable import TaskTool
-3. Create test class extending XCTestCase
-4. Implement setUp/tearDown if needed
-5. Write test methods with `test` prefix
-6. Run tests to verify
+## Adding New Tests
 
-### Updating Existing Tests
-- When models change, update parsing tests
-- When file format changes, update serialization tests
-- When UI changes, update UI test selectors
-- Keep tests in sync with implementation
+1. Identify the right test class (model test → `TaskTests`/`PlanTests`, I/O test → `TaskStoreTests`, parsing → `MarkdownParserTests`)
+2. For tests that need file I/O, use the `setUp`/`tearDown` pattern from `TaskStoreTests` (temporary directory + direct `storageURL` assignment)
+3. Keep tests atomic: one assertion per test is ideal; at most one behaviour per test
+4. Run the full suite to verify no regressions before opening a PR
 
-## Known Issues
-- UI tests require manual storage location setup
-- Some tests may fail on fresh installations
-- File watching tests are not yet implemented
-- Performance tests have platform-specific thresholds
+---
 
-## Test Metrics
-- Expected test execution time: ~10-15 seconds (unit tests)
-- Expected test execution time: ~20-30 seconds (UI tests)
-- Code coverage target: 70%+
-- Critical path coverage target: 90%+
+## Known Constraints
+
+- **Security-scoped resources in tests**: `setStorageLocation()` must not be called in unit tests — use `taskStore.storageURL = tempDir` + `taskStore.loadAllData()` instead.
+- **File watcher not tested directly**: `DispatchSourceFileSystemObject` fires asynchronously and would require `XCTestExpectation` with real filesystem delays; covered implicitly by `testLoadAllData*` reload tests.
+- **UI test storage location**: The `testLaunch` UI test does not configure a storage location; it only verifies the app opens without crashing.

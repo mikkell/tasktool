@@ -29,9 +29,21 @@ struct MarkdownParser {
         let tags = metadata["tags"] as? [String] ?? []
         
         let dateFormatter = ISO8601DateFormatter()
-        let created = (metadata["created"] as? String).flatMap { dateFormatter.date(from: $0) } ?? Date()
-        let updated = (metadata["updated"] as? String).flatMap { dateFormatter.date(from: $0) } ?? Date()
-        let dueDate = (metadata["due_date"] as? String).flatMap { dateFormatter.date(from: $0) }
+        // Yams may parse ISO8601 timestamps as native Date objects rather than Strings.
+        // The helper handles both cases so date fields round-trip correctly.
+        func parseDate(_ key: String, fallback: Date = Date()) -> Date {
+            if let s = metadata[key] as? String { return dateFormatter.date(from: s) ?? fallback }
+            if let d = metadata[key] as? Date   { return d }
+            return fallback
+        }
+        func parseDateOptional(_ key: String) -> Date? {
+            if let s = metadata[key] as? String { return dateFormatter.date(from: s) }
+            if let d = metadata[key] as? Date   { return d }
+            return nil
+        }
+        let created = parseDate("created")
+        let updated = parseDate("updated")
+        let dueDate = parseDateOptional("due_date")
         
         return Task(
             id: UUID(uuidString: id) ?? UUID(),
@@ -89,7 +101,10 @@ struct MarkdownParser {
         let description = metadata["description"] as? String ?? ""
         
         let dateFormatter = ISO8601DateFormatter()
-        let created = (metadata["created"] as? String).flatMap { dateFormatter.date(from: $0) } ?? Date()
+        let created: Date
+        if let s = metadata["created"] as? String { created = dateFormatter.date(from: s) ?? Date() }
+        else if let d = metadata["created"] as? Date { created = d }
+        else { created = Date() }
         
         // Parse statuses
         var statuses: [Plan.TaskStatus] = []
@@ -128,10 +143,10 @@ struct MarkdownParser {
         var yaml = """
         # Plan: \(plan.name)
         id: \(plan.id.uuidString)
-        name: \(plan.name)
+        name: \(yamlQuote(plan.name))
         color: \(plan.color)
         created: \(dateFormatter.string(from: plan.created))
-        description: \(plan.description)
+        description: \(yamlQuote(plan.description))
         statuses:
         
         """
@@ -140,7 +155,7 @@ struct MarkdownParser {
         for status in plan.statuses.sorted(by: { $0.order < $1.order }) {
             yaml += """
               - id: \(status.id.uuidString)
-                name: \(status.name)
+                name: \(yamlQuote(status.name))
                 color: \(status.color)
                 order: \(status.order)
             
@@ -195,6 +210,23 @@ struct MarkdownParser {
         return bodyLines.joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
     }
     
+    /// Wraps a string in double quotes if it contains characters that would break YAML parsing.
+    /// Escapes any existing double-quotes inside the string.
+    private static func yamlQuote(_ value: String) -> String {
+        let needsQuoting = value.isEmpty
+            || value.contains(":")
+            || value.contains("#")
+            || value.contains("\"")
+            || value.hasPrefix(" ")
+            || value.hasSuffix(" ")
+            || value.hasPrefix("-")
+            || value.hasPrefix("{")
+            || value.hasPrefix("[")
+        guard needsQuoting else { return value }
+        let escaped = value.replacingOccurrences(of: "\"", with: "\\\"")
+        return "\"\(escaped)\""
+    }
+    
     enum ParsingError: Error {
         case missingFrontmatter
         case invalidFormat
@@ -217,7 +249,7 @@ struct MarkdownParser {
         yaml += "plan_order:\n"
         
         for planName in settings.planOrder {
-            yaml += "  - \(planName)\n"
+            yaml += "  - \(yamlQuote(planName))\n"
         }
         
         return yaml
