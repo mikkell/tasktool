@@ -898,15 +898,53 @@ struct TaskDetailView: View {
     @State private var errorMessage = ""
     @State private var newTag = ""
     @State private var hasDueDate: Bool
-    
+    @State private var subtasks: [SubTask]
+    @State private var bodyNotes: String
+    @State private var newSubtaskTitle = ""
+
+    private struct SubTask: Identifiable {
+        var id = UUID()
+        var title: String
+        var isCompleted: Bool
+    }
+
     var plan: Plan? {
         taskStore.plans.first(where: { $0.name == editedTask.plan })
     }
-    
+
     init(task: Task) {
         self.task = task
         _editedTask = State(initialValue: task)
         _hasDueDate = State(initialValue: task.dueDate != nil)
+        let parsed = Self.parseBody(task.body)
+        _subtasks = State(initialValue: parsed.subtasks)
+        _bodyNotes = State(initialValue: parsed.notes)
+    }
+
+    // Split body into subtask lines and everything else.
+    private static func parseBody(_ body: String) -> (subtasks: [SubTask], notes: String) {
+        var result: [SubTask] = []
+        var noteLines: [String] = []
+        for line in body.components(separatedBy: .newlines) {
+            if line.hasPrefix("- [ ] ") {
+                result.append(SubTask(title: String(line.dropFirst(6)), isCompleted: false))
+            } else if line.hasPrefix("- [x] ") {
+                result.append(SubTask(title: String(line.dropFirst(6)), isCompleted: true))
+            } else {
+                noteLines.append(line)
+            }
+        }
+        let notes = noteLines.joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
+        return (result, notes)
+    }
+
+    // Reconstruct body from subtasks + notes whenever either changes.
+    private func rebuildBody() {
+        let checkboxLines = subtasks.map { $0.isCompleted ? "- [x] \($0.title)" : "- [ ] \($0.title)" }
+        var parts: [String] = []
+        if !checkboxLines.isEmpty { parts.append(checkboxLines.joined(separator: "\n")) }
+        if !bodyNotes.isEmpty    { parts.append(bodyNotes) }
+        editedTask.body = parts.joined(separator: "\n\n")
     }
     
     var body: some View {
@@ -949,13 +987,14 @@ struct TaskDetailView: View {
                         }
                     }
                     
-                    // Body
+                    // Body / Notes
                     VStack(alignment: .leading, spacing: 8) {
-                        Text("Description")
+                        Text("Notes")
                             .font(.headline)
-                        TextEditor(text: $editedTask.body)
-                            .frame(minHeight: 150)
+                        TextEditor(text: $bodyNotes)
+                            .frame(minHeight: 100)
                             .border(Color.secondary.opacity(0.2))
+                            .onChange(of: bodyNotes) { _, _ in rebuildBody() }
                     }
                     
                     // Tags
@@ -1014,6 +1053,78 @@ struct TaskDetailView: View {
                         }
                     }
                     
+                    // Sub-tasks
+                    VStack(alignment: .leading, spacing: 8) {
+                        HStack {
+                            Text("Sub-tasks")
+                                .font(.headline)
+                            Spacer()
+                            if !subtasks.isEmpty {
+                                let done = subtasks.filter(\.isCompleted).count
+                                Text("\(done)/\(subtasks.count)")
+                                    .font(.caption)
+                                    .foregroundColor(.secondary)
+                            }
+                        }
+
+                        if !subtasks.isEmpty {
+                            VStack(spacing: 4) {
+                                ForEach(subtasks.indices, id: \.self) { i in
+                                    HStack(spacing: 8) {
+                                        Image(systemName: subtasks[i].isCompleted ? "checkmark.square.fill" : "square")
+                                            .foregroundColor(subtasks[i].isCompleted ? .accentColor : .secondary)
+                                            .font(.body)
+                                            .onTapGesture {
+                                                subtasks[i].isCompleted.toggle()
+                                                rebuildBody()
+                                            }
+
+                                        TextField("Sub-task", text: $subtasks[i].title)
+                                            .textFieldStyle(.plain)
+                                            .strikethrough(subtasks[i].isCompleted, color: .secondary)
+                                            .foregroundColor(subtasks[i].isCompleted ? .secondary : .primary)
+                                            .onChange(of: subtasks[i].title) { _, _ in rebuildBody() }
+
+                                        Button {
+                                            subtasks.remove(at: i)
+                                            rebuildBody()
+                                        } label: {
+                                            Image(systemName: "xmark")
+                                                .font(.caption2)
+                                                .foregroundColor(.secondary)
+                                        }
+                                        .buttonStyle(.plain)
+                                    }
+                                    .padding(.horizontal, 8)
+                                    .padding(.vertical, 5)
+                                    .background(Color(nsColor: .controlBackgroundColor))
+                                    .cornerRadius(6)
+                                }
+                            }
+                        }
+
+                        // Add sub-task row
+                        HStack(spacing: 6) {
+                            Image(systemName: "square")
+                                .foregroundColor(.secondary)
+                                .font(.body)
+                            TextField("Add sub-task…", text: $newSubtaskTitle)
+                                .textFieldStyle(.plain)
+                                .onSubmit { commitNewSubtask() }
+                            if !newSubtaskTitle.isEmpty {
+                                Button("Add") { commitNewSubtask() }
+                                    .buttonStyle(.plain)
+                                    .foregroundColor(.accentColor)
+                                    .font(.caption)
+                            }
+                        }
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 5)
+                        .background(Color(nsColor: .controlBackgroundColor).opacity(0.5))
+                        .cornerRadius(6)
+                        .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.secondary.opacity(0.15), lineWidth: 1))
+                    }
+
                     // Plan
                     VStack(alignment: .leading, spacing: 8) {
                         Text("Plan")
@@ -1096,6 +1207,14 @@ struct TaskDetailView: View {
         }
     }
     
+    private func commitNewSubtask() {
+        let trimmed = newSubtaskTitle.trimmingCharacters(in: .whitespaces)
+        guard !trimmed.isEmpty else { return }
+        subtasks.append(SubTask(title: trimmed, isCompleted: false))
+        newSubtaskTitle = ""
+        rebuildBody()
+    }
+
     private func saveAndClose() {
         do {
             try taskStore.updateTask(editedTask)
@@ -1136,47 +1255,75 @@ struct EditStatusesView: View {
             Divider()
             
             // Content
-            List {
-                ForEach(editedStatuses.indices, id: \.self) { index in
-                    HStack {
-                        Image(systemName: "line.3.horizontal")
+            ScrollView {
+                VStack(spacing: 4) {
+                    ForEach(editedStatuses.indices, id: \.self) { index in
+                        HStack(spacing: 8) {
+                            // Move up / down
+                            VStack(spacing: 2) {
+                                Button {
+                                    guard index > 0 else { return }
+                                    editedStatuses.swapAt(index, index - 1)
+                                    updateOrder()
+                                } label: {
+                                    Image(systemName: "chevron.up")
+                                        .font(.caption2)
+                                }
+                                .buttonStyle(.plain)
+                                .disabled(index == 0)
+
+                                Button {
+                                    guard index < editedStatuses.count - 1 else { return }
+                                    editedStatuses.swapAt(index, index + 1)
+                                    updateOrder()
+                                } label: {
+                                    Image(systemName: "chevron.down")
+                                        .font(.caption2)
+                                }
+                                .buttonStyle(.plain)
+                                .disabled(index == editedStatuses.count - 1)
+                            }
                             .foregroundColor(.secondary)
-                            .font(.caption)
-                        
-                        TextField("Status name", text: $editedStatuses[index].name)
-                            .textFieldStyle(.roundedBorder)
-                        
-                        Picker("Color", selection: $editedStatuses[index].color) {
-                            Text("Gray").tag("gray")
-                            Text("Blue").tag("blue")
-                            Text("Green").tag("green")
-                            Text("Red").tag("red")
-                            Text("Orange").tag("orange")
-                            Text("Purple").tag("purple")
-                            Text("Yellow").tag("yellow")
+                            .frame(width: 20)
+
+                            TextField("Status name", text: $editedStatuses[index].name)
+                                .textFieldStyle(.roundedBorder)
+
+                            Picker("Color", selection: $editedStatuses[index].color) {
+                                Text("Gray").tag("gray")
+                                Text("Blue").tag("blue")
+                                Text("Green").tag("green")
+                                Text("Red").tag("red")
+                                Text("Orange").tag("orange")
+                                Text("Purple").tag("purple")
+                                Text("Yellow").tag("yellow")
+                            }
+                            .frame(width: 120)
+
+                            Button {
+                                editedStatuses.remove(at: index)
+                            } label: {
+                                Image(systemName: "trash")
+                                    .foregroundColor(.red)
+                            }
+                            .buttonStyle(.plain)
+                            .disabled(editedStatuses.count <= 1)
                         }
-                        .frame(width: 120)
-                        
-                        Button(action: {
-                            editedStatuses.remove(at: index)
-                        }) {
-                            Image(systemName: "trash")
-                                .foregroundColor(.red)
-                        }
-                        .buttonStyle(.plain)
-                        .disabled(editedStatuses.count <= 1)
+                        .padding(.horizontal)
+                        .padding(.vertical, 6)
+                        .background(Color(nsColor: .controlBackgroundColor).opacity(index.isMultiple(of: 2) ? 0 : 0.5))
+                        .cornerRadius(6)
                     }
+
+                    Button(action: addStatus) {
+                        Label("Add Status", systemImage: "plus.circle")
+                    }
+                    .padding(.horizontal)
+                    .padding(.top, 8)
+                    .frame(maxWidth: .infinity, alignment: .leading)
                 }
-                .onMove { from, to in
-                    editedStatuses.move(fromOffsets: from, toOffset: to)
-                    updateOrder()
-                }
-                
-                Button(action: addStatus) {
-                    Label("Add Status", systemImage: "plus.circle")
-                }
+                .padding(.vertical, 8)
             }
-            .listStyle(.inset)
             
             Divider()
             
