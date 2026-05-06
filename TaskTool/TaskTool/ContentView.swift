@@ -463,19 +463,60 @@ struct KanbanColumn: View {
 struct TaskCard: View {
     let task: Task
     @State private var isHovered = false
-    
+
+    private enum DueUrgency { case overdue, today, tomorrow, upcoming }
+
+    private var dueUrgency: DueUrgency {
+        guard let dueDate = task.dueDate else { return .upcoming }
+        let calendar = Calendar.current
+        let today = calendar.startOfDay(for: Date())
+        let taskDay = calendar.startOfDay(for: dueDate)
+        let days = calendar.dateComponents([.day], from: today, to: taskDay).day ?? 0
+        if days < 0  { return .overdue }
+        if days == 0 { return .today }
+        if days == 1 { return .tomorrow }
+        return .upcoming
+    }
+
+    private var cardBackground: Color {
+        switch dueUrgency {
+        case .overdue, .today: return Color.red.opacity(isHovered ? 0.20 : 0.12)
+        case .tomorrow:        return Color.yellow.opacity(isHovered ? 0.28 : 0.18)
+        case .upcoming:        return isHovered
+                                    ? Color.accentColor.opacity(0.08)
+                                    : Color(nsColor: .textBackgroundColor)
+        }
+    }
+
+    private var dueDateColor: Color {
+        switch dueUrgency {
+        case .overdue, .today: return .red
+        case .tomorrow:        return Color(nsColor: .systemOrange)
+        case .upcoming:        return .secondary
+        }
+    }
+
+    private var dueDateIcon: String {
+        switch dueUrgency {
+        case .overdue:  return "calendar.badge.exclamationmark"
+        case .today:    return "calendar.badge.clock"
+        case .tomorrow: return "calendar"
+        case .upcoming: return "calendar"
+        }
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             Text(task.title)
                 .font(.headline)
-            
+
             if !task.body.isEmpty {
                 Text(task.body)
                     .font(.caption)
                     .foregroundColor(.secondary)
                     .lineLimit(2)
             }
-            
+
             if !task.tags.isEmpty {
                 HStack {
                     ForEach(task.tags, id: \.self) { tag in
@@ -488,20 +529,20 @@ struct TaskCard: View {
                     }
                 }
             }
-            
+
             if let dueDate = task.dueDate {
                 HStack {
-                    Image(systemName: "calendar")
+                    Image(systemName: dueDateIcon)
                         .font(.caption)
                     Text(dueDate, style: .date)
                         .font(.caption)
                 }
-                .foregroundColor(.secondary)
+                .foregroundColor(dueDateColor)
             }
         }
         .padding()
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(isHovered ? Color.accentColor.opacity(0.08) : Color(nsColor: .textBackgroundColor))
+        .background(cardBackground)
         .cornerRadius(6)
         .overlay(
             RoundedRectangle(cornerRadius: 6)
