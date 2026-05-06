@@ -1,0 +1,216 @@
+#!/usr/bin/env bash
+# TaskTool CLI — create and list tasks from the terminal.
+#
+# Setup (add one of these to ~/.zshrc or ~/.bashrc):
+#   export PATH="/path/to/tasktool/bin:$PATH"
+#   alias tt="/path/to/tasktool/bin/tt"
+#
+# Override the storage folder:
+#   export TASKTOOL_DIR="/path/to/your/tasks"
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+TASKTOOL_DIR="${TASKTOOL_DIR:-$SCRIPT_DIR/../tasks}"
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+slugify() {
+    echo "$1" \
+        | tr '[:upper:]' '[:lower:]' \
+        | sed 's/[^a-z0-9]/-/g' \
+        | sed 's/-\+/-/g' \
+        | sed 's/^-//;s/-$//'
+}
+
+get_default_plan() {
+    local settings="$TASKTOOL_DIR/settings.yaml"
+    [[ -f "$settings" ]] || return
+    grep -A1 'plan_order:' "$settings" | tail -1 | sed 's/^[[:space:]]*- //' | tr -d '"'
+}
+
+get_first_status() {
+    local plan_yaml="$TASKTOOL_DIR/$1/plan.yaml"
+    if [[ -f "$plan_yaml" ]]; then
+        awk '/statuses:/{found=1} found && /name:/{print; exit}' "$plan_yaml" \
+            | sed 's/.*name: //' | tr -d '"'
+    else
+        echo "To Do"
+    fi
+}
+
+# ---------------------------------------------------------------------------
+# Commands
+# ---------------------------------------------------------------------------
+
+cmd_new() {
+    local title="" plan="" status="" tags="" due="" body=""
+
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --plan)   plan="$2";   shift 2 ;;
+            --status) status="$2"; shift 2 ;;
+            --tags)   tags="$2";   shift 2 ;;
+            --due)    due="$2";    shift 2 ;;
+            --body)   body="$2";   shift 2 ;;
+            -*)
+                echo "Unknown option: $1" >&2
+                exit 1
+                ;;
+            *)
+                [[ -z "$title" ]] && title="$1" || { echo "Unexpected argument: $1" >&2; exit 1; }
+                shift
+                ;;
+        esac
+    done
+
+    if [[ -z "$title" ]]; then
+        echo "Error: title is required." >&2
+        echo "Usage: tt new \"Task title\" [--plan Name] [--status \"Status\"] [--tags t1,t2] [--due YYYY-MM-DD] [--body \"text\"]" >&2
+        exit 1
+    fi
+
+    [[ -z "$plan" ]] && plan=$(get_default_plan)
+    if [[ -z "$plan" ]]; then
+        echo "Error: no plan found. Use --plan or add plan_order to settings.yaml." >&2
+        exit 1
+    fi
+
+    local plan_dir="$TASKTOOL_DIR/$plan"
+    if [[ ! -f "$plan_dir/plan.yaml" ]]; then
+        echo "Error: plan '$plan' not found (missing $plan_dir/plan.yaml)." >&2
+        exit 1
+    fi
+
+    [[ -z "$status" ]] && status=$(get_first_status "$plan")
+
+    local now id slug
+    now=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+    id=$(uuidgen | tr '[:upper:]' '[:lower:]')
+    slug=$(slugify "$title")
+    [[ -z "$slug" ]] && slug="${id:0:8}"
+
+    # Collision guard
+    local filename="$slug.md"
+    [[ -f "$plan_dir/$filename" ]] && filename="${slug}-${id:0:8}.md"
+
+    # Build the file content
+    {
+        echo "---"
+        echo "id: $id"
+        echo "type: task"
+        echo "plan: $plan"
+        echo "status: $status"
+
+        if [[ -n "$due" ]]; then
+            echo "due_date: ${due}T00:00:00Z"
+        fi
+
+        if [[ -n "$tags" ]]; then
+            echo "tags:"
+            IFS=',' read -ra TAG_ARRAY <<< "$tags"
+            for tag in "${TAG_ARRAY[@]}"; do
+                tag=$(echo "$tag" | xargs)
+                echo "  - $tag"
+            done
+        fi
+
+        echo "created: $now"
+        echo "updated: $now"
+        echo "---"
+        echo "# $title"
+        [[ -n "$body" ]] && printf '\n%s\n' "$body"
+    } > "$plan_dir/$filename"
+
+    echo "✅ $plan/$filename"
+}
+
+cmd_list() {
+    local plan_filter="" status_filter=""
+
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --plan)   plan_filter="$2";   shift 2 ;;
+            --status) status_filter="$2"; shift 2 ;;
+            *) shift ;;
+        esac
+    done
+
+    local found=0
+    for plan_yaml in "$TASKTOOL_DIR"/*/plan.yaml; do
+        [[ -f "$plan_yaml" ]] || continue
+        local plan_dir plan_name
+        plan_dir=$(dirname "$plan_yaml")
+        plan_name=$(basename "$plan_dir")
+
+        [[ -n "$plan_filter" && "$plan_name" != "$plan_filter" ]] && continue
+
+        for task_file in "$plan_dir"/*.md; do
+            [[ -f "$task_file" ]] || continue
+            local title status
+            title=$(grep -m1 '^# ' "$task_file" | sed 's/^# //')
+            status=$(grep -m1 '^status:' "$task_file" | sed 's/^status: //')
+
+            [[ -n "$status_filter" && "$status" != "$status_filter" ]] && continue
+
+            printf "  %-18s  %-14s  %s\n" "[$plan_name]" "[$status]" "$title"
+            found=1
+        done
+    done
+
+    [[ $found -eq 0 ]] && echo "No tasks found."
+}
+
+cmd_plans() {
+    for plan_yaml in "$TASKTOOL_DIR"/*/plan.yaml; do
+        [[ -f "$plan_yaml" ]] || continue
+        local plan_name count
+        plan_name=$(basename "$(dirname "$plan_yaml")")
+        count=$(ls "$(dirname "$plan_yaml")"/*.md 2>/dev/null | wc -l | tr -d ' ')
+        echo "  $plan_name  ($count task files)"
+    done
+}
+
+# ---------------------------------------------------------------------------
+# Usage
+# ---------------------------------------------------------------------------
+
+usage() {
+    cat <<EOF
+TaskTool CLI
+
+Usage:
+  tt new "Task title" [options]    Create a new task
+  tt list [options]                List tasks
+  tt plans                         List plans
+
+Options for 'new':
+  --plan <name>       Target plan (default: first in settings.yaml)
+  --status <name>     Status (default: first status in the plan)
+  --tags <t1,t2>      Comma-separated tags
+  --due <YYYY-MM-DD>  Due date
+  --body <text>       Task body content
+
+Options for 'list':
+  --plan <name>       Filter by plan
+  --status <name>     Filter by status
+
+Environment:
+  TASKTOOL_DIR        Path to tasks folder (default: ../tasks relative to this script)
+
+Examples:
+  tt new "Fix login bug" --plan TaskTool --tags "bug,auth"
+  tt new "Write release notes" --due 2026-06-01
+  tt list --plan TaskTool --status "In Progress"
+EOF
+}
+
+case "${1:-}" in
+    new)   shift; cmd_new "$@" ;;
+    list)  shift; cmd_list "$@" ;;
+    plans) cmd_plans ;;
+    help|--help|-h) usage ;;
+    *) usage ;;
+esac

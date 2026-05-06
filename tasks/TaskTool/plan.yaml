@@ -1,0 +1,23 @@
+# Plan: TaskTool
+id: 239677bf-ca8a-4282-a7f0-dc3f870bebca
+name: TaskTool
+color: blue
+created: 2026-05-06T13:16:16Z
+description: Development tasks for the TaskTool project
+statuses:
+  - id: 467568b5-7d50-4a95-9bc3-804633db279b
+    name: To Do
+    color: gray
+    order: 0
+  - id: b707bd51-1a4f-4565-b816-f652edba5c29
+    name: In Progress
+    color: blue
+    order: 1
+  - id: cf5e485d-b88d-4e05-8436-d61c697b993a
+    name: In Review
+    color: orange
+    order: 2
+  - id: 4386bae7-2249-44c6-89a1-db57a6329c57
+    name: Done
+    color: green
+    order: 3

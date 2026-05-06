@@ -25,5 +25,10 @@ struct TaskToolApp: App {
                 // Remove default "New Window" command
             }
         }
+
+        SwiftUI.Settings {
+            SettingsView()
+                .environmentObject(taskStore)
+        }
     }
 }
