@@ -28,6 +28,10 @@ struct Plan: Identifiable, Codable, Hashable {
             self.color = color
             self.order = order
         }
+
+        var isDoneStatus: Bool {
+            name.lowercased().contains("done")
+        }
     }
     
     init(

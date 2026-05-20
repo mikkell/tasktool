@@ -60,15 +60,7 @@ struct ContentView: View {
                 List(selection: $selectedPlan) {
                     Section("Plans") {
                         ForEach(taskStore.plans.sorted(by: { $0.order < $1.order }), id: \.id) { plan in
-                            NavigationLink(value: plan) {
-                                HStack {
-                                    Circle()
-                                        .fill(Color.from(string: plan.color))
-                                        .frame(width: 12, height: 12)
-                                    Text(plan.name)
-                                }
-                            }
-                            .onDrop(of: [.text], isTargeted: nil) { providers in
+                            PlanSidebarRow(plan: plan) { providers in
                                 handleTaskDropOnPlan(providers: providers, targetPlan: plan)
                             }
                             .contextMenu {
@@ -245,12 +237,49 @@ struct ContentView: View {
     }
 }
 
+/// Sidebar row for a plan. Shows a highlighted background and drop indicator
+/// when a task is dragged over it, making cross-plan moves obvious.
+private struct PlanSidebarRow: View {
+    let plan: Plan
+    let onDrop: ([NSItemProvider]) -> Bool
+    @State private var isTargeted = false
+
+    var body: some View {
+        NavigationLink(value: plan) {
+            HStack {
+                Circle()
+                    .fill(Color.from(string: plan.color))
+                    .frame(width: 12, height: 12)
+                Text(plan.name)
+                Spacer()
+                if isTargeted {
+                    Image(systemName: "arrow.right.circle.fill")
+                        .foregroundColor(Color.from(string: plan.color))
+                        .transition(.scale.combined(with: .opacity))
+                }
+            }
+            .padding(.vertical, 2)
+            .padding(.horizontal, 4)
+            .background(
+                RoundedRectangle(cornerRadius: 6)
+                    .fill(isTargeted ? Color.from(string: plan.color).opacity(0.18) : Color.clear)
+            )
+            .animation(.spring(response: 0.2, dampingFraction: 0.75), value: isTargeted)
+        }
+        .onDrop(of: [.text], isTargeted: $isTargeted) { providers in
+            onDrop(providers)
+        }
+    }
+}
+
+
 struct PlanDetailView: View {
     let planId: UUID
     @EnvironmentObject var taskStore: TaskStore
     @State private var showingNewTask = false
     @State private var showingEditStatuses = false
     @State private var showingArchiveConfirmation = false
+    @State private var searchText = ""
     
     var plan: Plan? {
         taskStore.plans.first(where: { $0.id == planId })
@@ -261,12 +290,22 @@ struct PlanDetailView: View {
         return taskStore.tasks.filter { $0.plan == plan.name }
     }
     
+    var filteredPlanTasks: [Task] {
+        guard !searchText.isEmpty else { return planTasks }
+        let query = searchText.lowercased()
+        return planTasks.filter { task in
+            task.title.lowercased().contains(query) ||
+            task.body.lowercased().contains(query) ||
+            task.tags.contains(where: { $0.lowercased().contains(query) })
+        }
+    }
+    
     func tasks(for status: Plan.TaskStatus) -> [Task] {
-        planTasks.filter { $0.status == status.name }
+        filteredPlanTasks.filter { $0.status == status.name }
     }
     
     var doneStatusName: String? {
-        plan?.statuses.first(where: { $0.name.lowercased().contains("done") })?.name
+        plan?.statuses.first(where: { $0.isDoneStatus })?.name
     }
     
     var doneTasks: [Task] {
@@ -283,6 +322,7 @@ struct PlanDetailView: View {
                         tasks: tasks(for: status),
                         color: Color.from(string: status.color),
                         statusName: status.name,
+                        isDoneColumn: status.isDoneStatus,
                         plan: plan
                     )
                 }
@@ -290,6 +330,7 @@ struct PlanDetailView: View {
             .animation(.spring(response: 0.3, dampingFraction: 0.8), value: taskStore.tasks.map { "\($0.id)-\($0.status)" }.joined())
             .padding()
             .navigationTitle(plan.name)
+            .searchable(text: $searchText, placement: .toolbar, prompt: "Search tasks…")
             .toolbar {
                 ToolbarItem(placement: .primaryAction) {
                     Button(action: { showingNewTask = true }) {
@@ -345,6 +386,7 @@ struct KanbanColumn: View {
     let tasks: [Task]
     let color: Color
     let statusName: String
+    let isDoneColumn: Bool
     let plan: Plan
     @State private var selectedTask: Task?
     @State private var isTargeted = false
@@ -380,6 +422,7 @@ struct KanbanColumn: View {
                     .padding(.vertical, 4)
                     .background(Color.white.opacity(0.2))
                     .cornerRadius(12)
+                    .contentTransition(.numericText())
             }
             .padding()
             .background(color)
@@ -390,10 +433,10 @@ struct KanbanColumn: View {
             ScrollView {
                 VStack(spacing: 8) {
                     ForEach(tasks) { task in
-                        TaskCard(task: task)
+                        TaskCard(task: task, isDone: isDoneColumn)
                             .transition(.asymmetric(
-                                insertion: .scale.combined(with: .opacity),
-                                removal: .scale.combined(with: .opacity)
+                                insertion: .move(edge: .top).combined(with: .opacity),
+                                removal: .move(edge: .bottom).combined(with: .opacity)
                             ))
                             .onTapGesture {
                                 selectedTask = task
@@ -403,13 +446,14 @@ struct KanbanColumn: View {
                             }
                     }
                 }
-                .animation(.spring(response: 0.35, dampingFraction: 0.75), value: tasks.map { $0.id })
+                .animation(.spring(response: 0.3, dampingFraction: 0.7), value: tasks.map { $0.id })
                 .padding()
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
         .frame(maxWidth: .infinity)
         .background(isTargeted ? color.opacity(0.15) : Color(nsColor: .controlBackgroundColor))
+        .animation(.spring(response: 0.25, dampingFraction: 0.8), value: isTargeted)
         .cornerRadius(12)
         .overlay(
             RoundedRectangle(cornerRadius: 12)
@@ -462,6 +506,7 @@ struct KanbanColumn: View {
 
 struct TaskCard: View {
     let task: Task
+    var isDone: Bool = false
     @State private var isHovered = false
 
     private enum DueUrgency { case overdue, today, tomorrow, upcoming }
@@ -479,6 +524,9 @@ struct TaskCard: View {
     }
 
     private var cardBackground: Color {
+        if isDone {
+            return Color.green.opacity(isHovered ? 0.20 : 0.12)
+        }
         switch dueUrgency {
         case .overdue, .today: return Color.red.opacity(isHovered ? 0.20 : 0.12)
         case .tomorrow:        return Color.yellow.opacity(isHovered ? 0.28 : 0.18)
@@ -489,6 +537,7 @@ struct TaskCard: View {
     }
 
     private var dueDateColor: Color {
+        if isDone { return .green }
         switch dueUrgency {
         case .overdue, .today: return .red
         case .tomorrow:        return Color(nsColor: .systemOrange)
@@ -546,11 +595,13 @@ struct TaskCard: View {
         .cornerRadius(6)
         .overlay(
             RoundedRectangle(cornerRadius: 6)
-                .stroke(Color.gray.opacity(0.2), lineWidth: 1)
+                .stroke(Color.primary.opacity(0.12), lineWidth: 1)
         )
         .contentShape(Rectangle())
+        .scaleEffect(isHovered ? 1.015 : 1.0)
+        .shadow(color: Color.black.opacity(isHovered ? 0.12 : 0.04), radius: isHovered ? 6 : 2, y: isHovered ? 3 : 1)
         .onHover { hovering in
-            withAnimation(.easeInOut(duration: 0.15)) {
+            withAnimation(.spring(response: 0.2, dampingFraction: 0.7)) {
                 isHovered = hovering
             }
         }
@@ -773,6 +824,7 @@ struct NewTaskViewForStatus: View {
             Form {
                 LabeledContent("Task Title") {
                     TextField("", text: $title)
+                        .autocorrectionDisabled(false)
                         .textFieldStyle(.roundedBorder)
                         .overlay(
                             RoundedRectangle(cornerRadius: 5)
@@ -889,6 +941,105 @@ extension Binding {
     }
 }
 
+/// Extracts markdown image references from a body string and displays them
+/// as async image previews. Also provides a field to paste new image URLs.
+private struct TaskImagesSection: View {
+    @Binding var bodyText: String
+    let onChanged: () -> Void
+    @State private var imageURL = ""
+    @State private var isAddingImage = false
+
+    private static let imageRegex = try? NSRegularExpression(
+        pattern: #"!\[([^\]]*)\]\((https?://[^\)]+)\)"#
+    )
+
+    private var imageURLs: [(alt: String, url: URL)] {
+        guard let regex = Self.imageRegex else { return [] }
+        let range = NSRange(bodyText.startIndex..., in: bodyText)
+        return regex.matches(in: bodyText, range: range).compactMap { match in
+            guard let altRange = Range(match.range(at: 1), in: bodyText),
+                  let urlRange = Range(match.range(at: 2), in: bodyText),
+                  let url = URL(string: String(bodyText[urlRange])) else { return nil }
+            return (alt: String(bodyText[altRange]), url: url)
+        }
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Text("Images")
+                    .font(.headline)
+                Spacer()
+                Button(action: { isAddingImage.toggle() }) {
+                    Label("Add Image URL", systemImage: "photo.badge.plus")
+                        .font(.caption)
+                }
+                .buttonStyle(.plain)
+                .foregroundColor(.accentColor)
+            }
+
+            if isAddingImage {
+                HStack {
+                    TextField("https://example.com/image.png", text: $imageURL)
+                        .textFieldStyle(.roundedBorder)
+                    Button("Add") {
+                        let trimmed = imageURL.trimmingCharacters(in: .whitespaces)
+                        guard !trimmed.isEmpty, URL(string: trimmed) != nil else { return }
+                        if bodyText.isEmpty {
+                            bodyText = "![image](\(trimmed))"
+                        } else {
+                            bodyText += "\n![image](\(trimmed))"
+                        }
+                        onChanged()
+                        imageURL = ""
+                        isAddingImage = false
+                    }
+                    .disabled(imageURL.trimmingCharacters(in: .whitespaces).isEmpty)
+                }
+            }
+
+            if !imageURLs.isEmpty {
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 8) {
+                        ForEach(imageURLs, id: \.url) { item in
+                            AsyncImage(url: item.url) { phase in
+                                switch phase {
+                                case .success(let img):
+                                    img.resizable()
+                                        .scaledToFill()
+                                        .frame(width: 120, height: 90)
+                                        .clipped()
+                                        .cornerRadius(6)
+                                case .failure:
+                                    VStack(spacing: 4) {
+                                        Image(systemName: "photo.badge.exclamationmark")
+                                            .foregroundColor(.secondary)
+                                        Text(item.alt.isEmpty ? "Image" : item.alt)
+                                            .font(.caption2)
+                                            .foregroundColor(.secondary)
+                                    }
+                                    .frame(width: 120, height: 90)
+                                    .background(Color.secondary.opacity(0.1))
+                                    .cornerRadius(6)
+                                default:
+                                    ProgressView()
+                                        .frame(width: 120, height: 90)
+                                        .background(Color.secondary.opacity(0.1))
+                                        .cornerRadius(6)
+                                }
+                            }
+                        }
+                    }
+                }
+            } else if !isAddingImage {
+                Text("No images — paste a URL to add one")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+            }
+        }
+    }
+}
+
 struct TaskDetailView: View {
     let task: Task
     @Environment(\.dismiss) var dismiss
@@ -971,6 +1122,7 @@ struct TaskDetailView: View {
                             .font(.headline)
                         TextField("Task title", text: $editedTask.title)
                             .textFieldStyle(.roundedBorder)
+                            .autocorrectionDisabled(false)
                     }
                     
                     // Status
@@ -995,8 +1147,12 @@ struct TaskDetailView: View {
                             .frame(minHeight: 100)
                             .border(Color.secondary.opacity(0.2))
                             .onChange(of: bodyNotes) { _, _ in rebuildBody() }
+                            .autocorrectionDisabled(false)
                     }
-                    
+
+                    // Images
+                    TaskImagesSection(bodyText: $bodyNotes, onChanged: rebuildBody)
+
                     // Tags
                     VStack(alignment: .leading, spacing: 8) {
                         Text("Tags")
@@ -1459,13 +1615,8 @@ struct EditPlanView: View {
         
         do {
             if nameChanged {
-                try taskStore.renamePlan(plan, to: name)
-                // After renaming, update the other properties
-                if var renamedPlan = taskStore.plans.first(where: { $0.id == plan.id }) {
-                    renamedPlan.description = description
-                    renamedPlan.color = color
-                    try taskStore.updatePlan(renamedPlan)
-                }
+                // Single operation: rename folder + write all updated fields at once.
+                try taskStore.renamePlan(plan, to: updatedPlan)
             } else {
                 try taskStore.updatePlan(updatedPlan)
             }

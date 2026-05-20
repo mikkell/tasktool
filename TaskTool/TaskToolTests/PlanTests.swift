@@ -66,6 +66,32 @@ final class PlanTests: XCTestCase {
         XCTAssertEqual(status1.name, status2.name)
     }
     
+    func testTaskStatusIsDoneStatusForDefaultDone() {
+        let doneStatus = Plan.TaskStatus(name: "Done", color: "green", order: 2)
+        XCTAssertTrue(doneStatus.isDoneStatus)
+    }
+
+    func testTaskStatusIsDoneStatusCaseInsensitive() {
+        XCTAssertTrue(Plan.TaskStatus(name: "done", color: "green", order: 0).isDoneStatus)
+        XCTAssertTrue(Plan.TaskStatus(name: "DONE", color: "green", order: 0).isDoneStatus)
+        XCTAssertTrue(Plan.TaskStatus(name: "Marked Done", color: "green", order: 0).isDoneStatus)
+        XCTAssertTrue(Plan.TaskStatus(name: "Done ✓", color: "green", order: 0).isDoneStatus)
+    }
+
+    func testTaskStatusIsDoneStatusFalseForNonDone() {
+        XCTAssertFalse(Plan.TaskStatus(name: "To Do", color: "gray", order: 0).isDoneStatus)
+        XCTAssertFalse(Plan.TaskStatus(name: "In Progress", color: "blue", order: 1).isDoneStatus)
+        XCTAssertFalse(Plan.TaskStatus(name: "Completed", color: "green", order: 3).isDoneStatus)
+        XCTAssertFalse(Plan.TaskStatus(name: "Review", color: "orange", order: 2).isDoneStatus)
+    }
+
+    func testDefaultStatusesOnlyDoneColumnIsDoneStatus() {
+        let statuses = Plan.defaultStatuses()
+        let doneStatuses = statuses.filter { $0.isDoneStatus }
+        XCTAssertEqual(doneStatuses.count, 1)
+        XCTAssertEqual(doneStatuses.first?.name, "Done")
+    }
+
     func testPlanEquality() {
         let id = UUID()
         let plan1 = Plan(id: id, name: "Plan A", color: "blue")

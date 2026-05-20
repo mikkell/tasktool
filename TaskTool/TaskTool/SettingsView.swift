@@ -12,6 +12,9 @@ struct SettingsView: View {
             GeneralSettingsTab()
                 .tabItem { Label("General", systemImage: "gearshape") }
 
+            ShortcutsSettingsTab()
+                .tabItem { Label("Shortcuts", systemImage: "keyboard") }
+
             CLISettingsTab()
                 .tabItem { Label("CLI", systemImage: "terminal") }
         }
@@ -71,6 +74,55 @@ struct GeneralSettingsTab: View {
         if panel.runModal() == .OK, let url = panel.url {
             taskStore.setStorageLocation(url)
         }
+    }
+}
+
+// MARK: - Shortcuts
+
+private struct ShortcutRow: View {
+    let keys: [String]
+    let description: String
+
+    var body: some View {
+        LabeledContent(description) {
+            HStack(spacing: 4) {
+                ForEach(keys, id: \.self) { key in
+                    Text(key)
+                        .font(.system(.caption, design: .monospaced).weight(.medium))
+                        .padding(.horizontal, 7)
+                        .padding(.vertical, 3)
+                        .background(.quaternary, in: RoundedRectangle(cornerRadius: 5))
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 5)
+                                .stroke(Color.primary.opacity(0.12), lineWidth: 1)
+                        )
+                }
+            }
+        }
+    }
+}
+
+struct ShortcutsSettingsTab: View {
+    var body: some View {
+        Form {
+            Section("Plans & Tasks") {
+                ShortcutRow(keys: ["⌘", "N"], description: "New Task")
+                ShortcutRow(keys: ["⌘", "F"], description: "Search tasks in plan")
+            }
+
+            Section("Editing") {
+                ShortcutRow(keys: ["⌘", "S"], description: "Save changes")
+                ShortcutRow(keys: ["↩"], description: "Confirm / Create")
+                ShortcutRow(keys: ["⎋"], description: "Cancel / Dismiss")
+            }
+
+            Section("Navigation") {
+                ShortcutRow(keys: ["⌘", ","], description: "Open Settings")
+            }
+        }
+        .formStyle(.grouped)
+        .padding()
+        .frame(minHeight: 260)
     }
 }
 

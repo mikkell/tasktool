@@ -163,6 +163,75 @@ cmd_list() {
     [[ $found -eq 0 ]] && echo "No tasks found."
 }
 
+cmd_work() {
+    local plan_filter=""
+
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --plan) plan_filter="$2"; shift 2 ;;
+            *) shift ;;
+        esac
+    done
+
+    # Collect To Do tasks
+    local todo_tasks=()
+    for plan_yaml in "$TASKTOOL_DIR"/*/plan.yaml; do
+        [[ -f "$plan_yaml" ]] || continue
+        local plan_dir plan_name
+        plan_dir=$(dirname "$plan_yaml")
+        plan_name=$(basename "$plan_dir")
+        [[ -n "$plan_filter" && "$plan_name" != "$plan_filter" ]] && continue
+
+        # Get the first status name from the plan (typically "To Do" or similar)
+        local first_status
+        first_status=$(get_first_status "$plan_name")
+
+        for task_file in "$plan_dir"/*.md; do
+            [[ -f "$task_file" ]] || continue
+            local status
+            status=$(grep -m1 '^status:' "$task_file" | sed 's/^status: //')
+            [[ "$status" == "$first_status" ]] && todo_tasks+=("$task_file")
+        done
+    done
+
+    local plan_label="${plan_filter:-all plans}"
+    echo "╔══════════════════════════════════════════════════════════════╗"
+    echo "║  TaskTool — Kanban Work Session                              ║"
+    echo "╚══════════════════════════════════════════════════════════════╝"
+    echo ""
+    echo "  Storage : $TASKTOOL_DIR"
+    echo "  Plan    : $plan_label"
+    echo "  To Do   : ${#todo_tasks[@]} task(s)"
+    echo ""
+
+    if [[ ${#todo_tasks[@]} -eq 0 ]]; then
+        echo "  ✅ No tasks in the first status column. Nothing to work on!"
+        return
+    fi
+
+    echo "─────────────────────────────────────────────────────────────────"
+    echo "  Tasks:"
+    for f in "${todo_tasks[@]}"; do
+        local title plan_name status
+        title=$(grep -m1 '^# ' "$f" | sed 's/^# //')
+        plan_name=$(grep -m1 '^plan:' "$f" | sed 's/^plan: //')
+        echo "    • [$plan_name] $title"
+    done
+    echo ""
+    echo "─────────────────────────────────────────────────────────────────"
+    echo "  Copilot prompt (paste into: gh copilot suggest or gh copilot chat):"
+    echo ""
+
+    local prompt="Look at the tasks in the first status column"
+    [[ -n "$plan_filter" ]] && prompt="Look at the tasks in the first status column in the '$plan_filter' plan"
+    prompt+=" at $TASKTOOL_DIR. Work through each task and move them to Done when complete."
+    prompt+=" The storage path is $TASKTOOL_DIR."
+
+    echo "  \"$prompt\""
+    echo ""
+}
+
+
 cmd_plans() {
     for plan_yaml in "$TASKTOOL_DIR"/*/plan.yaml; do
         [[ -f "$plan_yaml" ]] || continue
@@ -185,6 +254,7 @@ Usage:
   tt new "Task title" [options]    Create a new task
   tt list [options]                List tasks
   tt plans                         List plans
+  tt work [--plan <name>]          Show To Do tasks + Copilot session prompt
 
 Options for 'new':
   --plan <name>       Target plan (default: first in settings.yaml)
@@ -197,6 +267,9 @@ Options for 'list':
   --plan <name>       Filter by plan
   --status <name>     Filter by status
 
+Options for 'work':
+  --plan <name>       Scope to a specific plan
+
 Environment:
   TASKTOOL_DIR        Path to tasks folder (default: ../tasks relative to this script)
 
@@ -204,6 +277,7 @@ Examples:
   tt new "Fix login bug" --plan TaskTool --tags "bug,auth"
   tt new "Write release notes" --due 2026-06-01
   tt list --plan TaskTool --status "In Progress"
+  tt work --plan "TaskTool Dev Kanban"
 EOF
 }
 
@@ -211,6 +285,7 @@ case "${1:-}" in
     new)   shift; cmd_new "$@" ;;
     list)  shift; cmd_list "$@" ;;
     plans) cmd_plans ;;
+    work)  shift; cmd_work "$@" ;;
     help|--help|-h) usage ;;
     *) usage ;;
 esac

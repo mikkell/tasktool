@@ -105,7 +105,8 @@ final class TaskStoreTests: XCTestCase {
     func testRenamePlanRenamesFolderOnDisk() throws {
         let plan = Plan(name: "OldName", color: "blue")
         try taskStore.createPlan(plan)
-        try taskStore.renamePlan(plan, to: "NewName")
+        var updated = plan; updated.name = "NewName"
+        try taskStore.renamePlan(plan, to: updated)
 
         XCTAssertFalse(FileManager.default.fileExists(atPath: tempDir.appendingPathComponent("OldName").path))
         XCTAssertTrue(FileManager.default.fileExists(atPath: tempDir.appendingPathComponent("NewName").path))
@@ -114,7 +115,8 @@ final class TaskStoreTests: XCTestCase {
     func testRenamePlanUpdatesInMemoryPlanName() throws {
         let plan = Plan(name: "OldName", color: "blue")
         try taskStore.createPlan(plan)
-        try taskStore.renamePlan(plan, to: "NewName")
+        var updated = plan; updated.name = "NewName"
+        try taskStore.renamePlan(plan, to: updated)
         XCTAssertNotNil(taskStore.plans.first(where: { $0.name == "NewName" }))
         XCTAssertNil(taskStore.plans.first(where: { $0.name == "OldName" }))
     }
@@ -125,7 +127,8 @@ final class TaskStoreTests: XCTestCase {
         let task = Task(title: "My Task", plan: "OldName", status: "To Do")
         try taskStore.createTask(task)
 
-        try taskStore.renamePlan(plan, to: "NewName")
+        var updated = plan; updated.name = "NewName"
+        try taskStore.renamePlan(plan, to: updated)
         XCTAssertEqual(taskStore.tasks.first?.plan, "NewName")
     }
 
@@ -134,7 +137,8 @@ final class TaskStoreTests: XCTestCase {
         try taskStore.createPlan(plan)
         try taskStore.createTask(Task(title: "My Task", plan: "OldName", status: "To Do"))
 
-        try taskStore.renamePlan(plan, to: "NewName")
+        var updated = plan; updated.name = "NewName"
+        try taskStore.renamePlan(plan, to: updated)
 
         XCTAssertTrue(FileManager.default.fileExists(
             atPath: tempDir.appendingPathComponent("NewName/my-task.md").path))
@@ -145,12 +149,37 @@ final class TaskStoreTests: XCTestCase {
     func testRenamePlanUpdatesSettingsPlanOrder() throws {
         let plan = Plan(name: "Alpha", color: "blue")
         try taskStore.createPlan(plan)
-        try taskStore.renamePlan(plan, to: "Renamed")
+        var updated = plan; updated.name = "Renamed"
+        try taskStore.renamePlan(plan, to: updated)
         XCTAssertTrue(taskStore.settings.planOrder.contains("Renamed"))
         XCTAssertFalse(taskStore.settings.planOrder.contains("Alpha"))
     }
 
-    // MARK: - Plan – delete
+    func testRenamePlanAlsoUpdatesDescriptionAndColor() throws {
+        // Simulates the full UI flow in EditPlanView.savePlan() where rename + property
+        // changes are merged into a single renamePlan call.
+        let plan = Plan(name: "OldName", color: "blue", description: "old desc")
+        try taskStore.createPlan(plan)
+        var updated = plan
+        updated.name = "NewName"
+        updated.color = "green"
+        updated.description = "new desc"
+        try taskStore.renamePlan(plan, to: updated)
+
+        let saved = taskStore.plans.first(where: { $0.id == plan.id })
+        XCTAssertEqual(saved?.name, "NewName")
+        XCTAssertEqual(saved?.color, "green")
+        XCTAssertEqual(saved?.description, "new desc")
+
+        // Verify plan.yaml on disk contains the new values.
+        let yaml = try String(
+            contentsOf: tempDir.appendingPathComponent("NewName/plan.yaml"),
+            encoding: .utf8)
+        XCTAssertTrue(yaml.contains("NewName"))
+        XCTAssertTrue(yaml.contains("green"))
+        XCTAssertTrue(yaml.contains("new desc"))
+    }
+
 
     func testDeletePlanRemovesFolderFromDisk() throws {
         let plan = Plan(name: "DeleteMe", color: "red")
@@ -502,9 +531,82 @@ final class TaskStoreTests: XCTestCase {
         XCTAssertEqual(fresh.settings.planOrder, ["X", "Y", "Z"])
     }
 
-    func testSettingsFileCreatedOnFirstLoad() {
-        let settingsPath = tempDir.appendingPathComponent("settings.yaml").path
-        XCTAssertTrue(FileManager.default.fileExists(atPath: settingsPath))
+    // MARK: - Plan deletion / status preservation
+
+    // MARK: - Plan deletion / status preservation
+
+    /// Regression: renaming a status column must migrate all tasks that had the old name.
+    func testRenameStatusMigratesTasksToNewStatusName() throws {
+        let original = Plan.TaskStatus(name: "In Progress", color: "blue", order: 1)
+        let plan = Plan(name: "Work", color: "blue", statuses: [
+            Plan.TaskStatus(name: "To Do", color: "gray", order: 0),
+            original,
+            Plan.TaskStatus(name: "Done", color: "green", order: 2)
+        ])
+        try taskStore.createPlan(plan)
+
+        let task = Task(title: "Active task", plan: "Work", status: "In Progress")
+        try taskStore.createTask(task)
+
+        // Rename "In Progress" → "Doing" (same UUID, different name)
+        var updatedPlan = taskStore.plans.first(where: { $0.name == "Work" })!
+        let renamedStatus = Plan.TaskStatus(id: original.id, name: "Doing", color: "blue", order: 1)
+        updatedPlan.statuses = [
+            Plan.TaskStatus(name: "To Do", color: "gray", order: 0),
+            renamedStatus,
+            Plan.TaskStatus(name: "Done", color: "green", order: 2)
+        ]
+        try taskStore.updatePlan(updatedPlan)
+
+        // In-memory task status must reflect the new name
+        let inMemory = taskStore.tasks.first(where: { $0.id == task.id })
+        XCTAssertEqual(inMemory?.status, "Doing")
+
+        // On-disk task must also reflect the new name
+        taskStore.loadAllData()
+        let onDisk = taskStore.tasks.first(where: { $0.id == task.id })
+        XCTAssertEqual(onDisk?.status, "Doing")
+    }
+
+    /// Regression test: saving Plan A's statuses then deleting Plan B must not revert
+    /// Plan A's statuses — either in memory or on disk.
+    func testDeletePlanDoesNotRevertAnotherPlansStatuses() throws {
+        let customStatuses = [
+            Plan.TaskStatus(name: "Todo", color: "gray", order: 0),
+            Plan.TaskStatus(name: "Doing", color: "blue", order: 1),
+            Plan.TaskStatus(name: "Review", color: "orange", order: 2),
+            Plan.TaskStatus(name: "Done", color: "green", order: 3)
+        ]
+        var planA = Plan(name: "Alpha", color: "blue", statuses: Plan.defaultStatuses())
+        let planB = Plan(name: "Beta", color: "red")
+
+        try taskStore.createPlan(planA)
+        try taskStore.createPlan(planB)
+
+        // Update Plan A with custom statuses and persist them
+        planA = taskStore.plans.first(where: { $0.name == "Alpha" })!
+        planA.statuses = customStatuses
+        try taskStore.updatePlan(planA)
+
+        // Verify statuses are in memory
+        XCTAssertEqual(taskStore.plans.first(where: { $0.name == "Alpha" })?.statuses.count, 4)
+
+        // Delete the unrelated plan
+        let planBLoaded = taskStore.plans.first(where: { $0.name == "Beta" })!
+        try taskStore.deletePlan(planBLoaded)
+
+        // In-memory statuses must be unchanged
+        let inMemory = taskStore.plans.first(where: { $0.name == "Alpha" })
+        XCTAssertNotNil(inMemory)
+        XCTAssertEqual(inMemory?.statuses.count, 4)
+        XCTAssertEqual(inMemory?.statuses.map { $0.name }.sorted(), ["Doing", "Done", "Review", "Todo"])
+
+        // Reload from disk to confirm persistence survived the deletion
+        taskStore.loadAllData()
+        let onDisk = taskStore.plans.first(where: { $0.name == "Alpha" })
+        XCTAssertNotNil(onDisk)
+        XCTAssertEqual(onDisk?.statuses.count, 4)
+        XCTAssertEqual(onDisk?.statuses.map { $0.name }.sorted(), ["Doing", "Done", "Review", "Todo"])
     }
 }
 

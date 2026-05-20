@@ -19,6 +19,7 @@ class TaskStore: ObservableObject {
     private var fileWatcher: DispatchSourceFileSystemObject?
     private var isSaving = false  // Flag to prevent reload during save
     private var reloadDebounceWork: DispatchWorkItem?  // Debounce rapid file system events
+    private var savingWorkItem: DispatchWorkItem?  // Single cancellable timer for isSaving reset
     
     func setStorageLocation(_ url: URL) {
         print("📍 setStorageLocation called with: \(url.path)")
@@ -161,11 +162,19 @@ class TaskStore: ObservableObject {
     }
     
     /// Suppresses file-watcher reloads for 2.5 s — long enough for OneDrive to finish syncing.
+    /// Each call cancels the previous timer, so consecutive saves extend the window correctly.
     private func markSaving() {
         isSaving = true
-        DispatchQueue.main.asyncAfter(deadline: .now() + 2.5) { [weak self] in
+        // Cancel any reload that was queued before this write started.
+        reloadDebounceWork?.cancel()
+        reloadDebounceWork = nil
+        // Cancel the previous reset timer and start a fresh one from now.
+        savingWorkItem?.cancel()
+        let work = DispatchWorkItem { [weak self] in
             self?.isSaving = false
         }
+        savingWorkItem = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2.5, execute: work)
     }
     
     private func applyPlanOrder() {
@@ -265,16 +274,43 @@ class TaskStore: ObservableObject {
     
     func updatePlan(_ plan: Plan) throws {
         guard let storageURL = storageURL else { return }
-        
+
+        // Build a rename map: oldStatusName → newStatusName for any status whose
+        // name changed (matched by UUID so adds/deletes are not confused with renames).
+        let oldPlan = plans.first(where: { $0.id == plan.id })
+        let oldStatusNames: [UUID: String] = Dictionary(
+            uniqueKeysWithValues: (oldPlan?.statuses ?? []).map { ($0.id, $0.name) }
+        )
+        let renames: [String: String] = plan.statuses.reduce(into: [:]) { result, status in
+            if let oldName = oldStatusNames[status.id], oldName != status.name {
+                result[oldName] = status.name
+            }
+        }
+
         let planFolder = storageURL.appendingPathComponent(plan.folderName)
         let planFile = planFolder.appendingPathComponent("plan.yaml")
-        
+
         let content = MarkdownParser.serializePlan(plan)
         markSaving()
         try content.write(to: planFile, atomically: false, encoding: .utf8)
-        
+
         if let index = plans.firstIndex(where: { $0.id == plan.id }) {
             plans[index] = plan
+        }
+
+        // Migrate tasks whose status matches a renamed column.
+        if !renames.isEmpty {
+            for index in tasks.indices where tasks[index].plan == plan.name {
+                if let newStatus = renames[tasks[index].status] {
+                    var updated = tasks[index]
+                    updated.status = newStatus
+                    updated.updated = Date()
+                    let taskFile = planFolder.appendingPathComponent(updated.fileName)
+                    let taskContent = MarkdownParser.serializeTask(updated)
+                    try? taskContent.write(to: taskFile, atomically: false, encoding: .utf8)
+                    tasks[index] = updated
+                }
+            }
         }
     }
     
@@ -293,44 +329,43 @@ class TaskStore: ObservableObject {
         try saveSettings()
     }
     
-    func renamePlan(_ plan: Plan, to newName: String) throws {
+    /// Rename a plan's folder and write all updated properties in a single operation.
+    /// `updatedPlan` must have the new `name` (and any other changed fields) already set.
+    func renamePlan(_ plan: Plan, to updatedPlan: Plan) throws {
         guard let storageURL = storageURL else { return }
-        
-        let oldPlanFolder = storageURL.appendingPathComponent(plan.folderName)
+
+        let oldName = plan.name
+        let newName = updatedPlan.name
+        let oldPlanFolder = storageURL.appendingPathComponent(oldName)
         let newPlanFolder = storageURL.appendingPathComponent(newName)
-        
-        // Rename the folder
+
+        // Rename the folder on disk.
         markSaving()
         try fileManager.moveItem(at: oldPlanFolder, to: newPlanFolder)
-        
-        // Update the plan object
-        var updatedPlan = plan
-        updatedPlan.name = newName
-        
-        // Update the plan.yaml file
+
+        // Write plan.yaml with all updated fields in one shot.
         let planFile = newPlanFolder.appendingPathComponent("plan.yaml")
         let content = MarkdownParser.serializePlan(updatedPlan)
         try content.write(to: planFile, atomically: false, encoding: .utf8)
-        
-        // Update in-memory array
+
+        // Update in-memory plans array.
         if let index = plans.firstIndex(where: { $0.id == plan.id }) {
             plans[index] = updatedPlan
         }
-        
-        // Update all tasks that belong to this plan
-        for (index, task) in tasks.enumerated() where task.plan == plan.name {
+
+        // Migrate tasks: update their plan field and rewrite task files.
+        for (index, task) in tasks.enumerated() where task.plan == oldName {
             var updatedTask = task
             updatedTask.plan = newName
             tasks[index] = updatedTask
-            
-            // Update task file
+
             let taskFile = newPlanFolder.appendingPathComponent(task.fileName)
             let taskContent = MarkdownParser.serializeTask(updatedTask)
             try? taskContent.write(to: taskFile, atomically: false, encoding: .utf8)
         }
-        
-        // Update settings
-        if let index = settings.planOrder.firstIndex(of: plan.name) {
+
+        // Update settings.yaml plan order.
+        if let index = settings.planOrder.firstIndex(of: oldName) {
             settings.planOrder[index] = newName
             try saveSettings()
         }
