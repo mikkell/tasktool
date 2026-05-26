@@ -406,6 +406,59 @@ final class TaskStoreTests: XCTestCase {
         XCTAssertThrowsError(try taskStore.deleteTask(phantom))
     }
 
+    // MARK: - Task deduplication
+
+    func testLoadAllDataDeduplicatesByUUID() throws {
+        // Simulate an OneDrive sync conflict: two .md files in the same plan folder
+        // share the same UUID. loadAllData must produce exactly one task entry.
+        let plan = Plan(name: "Work", color: "blue")
+        try taskStore.createPlan(plan)
+
+        let sharedID = UUID()
+        let older = Task(id: sharedID, title: "Task A", plan: "Work", status: "To Do",
+                         updated: Date(timeIntervalSinceNow: -120))
+        let newer = Task(id: sharedID, title: "Task A (updated)", plan: "Work", status: "In Progress",
+                         updated: Date())
+
+        let planFolder = tempDir.appendingPathComponent("Work")
+        try MarkdownParser.serializeTask(older)
+            .write(to: planFolder.appendingPathComponent("task-a-old.md"),
+                   atomically: false, encoding: .utf8)
+        try MarkdownParser.serializeTask(newer)
+            .write(to: planFolder.appendingPathComponent("task-a-new.md"),
+                   atomically: false, encoding: .utf8)
+
+        taskStore.loadAllData()
+
+        XCTAssertEqual(taskStore.tasks.filter { $0.id == sharedID }.count, 1,
+                       "Duplicate UUIDs must be deduplicated on load")
+        // The newer (higher `updated`) entry should win.
+        XCTAssertEqual(taskStore.tasks.first(where: { $0.id == sharedID })?.status, "In Progress")
+    }
+
+    func testCreateTaskDoesNotDuplicateIfAlreadyInMemory() throws {
+        // If loadAllData somehow ran between the file write and the tasks.append
+        // inside createTask, the task would already be in memory. The guard must
+        // prevent a second entry.
+        let plan = Plan(name: "Work", color: "blue")
+        try taskStore.createPlan(plan)
+
+        let task = Task(title: "My Task", plan: "Work", status: "To Do")
+        try taskStore.createTask(task)
+        XCTAssertEqual(taskStore.tasks.filter { $0.id == task.id }.count, 1)
+
+        // Simulate the race: manually add the same task to memory again (as if
+        // loadAllData ran concurrently), then call createTask again via a reload.
+        taskStore.tasks.append(task)
+        XCTAssertEqual(taskStore.tasks.filter { $0.id == task.id }.count, 2,
+                       "Pre-condition: we manually created the duplicate")
+
+        // A reload should collapse it back to one entry.
+        taskStore.loadAllData()
+        XCTAssertEqual(taskStore.tasks.filter { $0.id == task.id }.count, 1,
+                       "loadAllData must remove the duplicate")
+    }
+
     // MARK: - Archive
 
     func testArchiveTasksMovesFileToArchivedSubfolder() throws {

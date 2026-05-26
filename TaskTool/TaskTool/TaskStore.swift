@@ -128,6 +128,24 @@ class TaskStore: ObservableObject {
         
         // Apply order from settings
         applyPlanOrder()
+
+        // Deduplicate tasks by UUID — two .md files in the same folder can share a UUID
+        // (e.g. OneDrive sync conflict copies). Keep the entry with the newest `updated`
+        // timestamp so the most recent state wins.
+        var seen: [UUID: Task] = [:]
+        for task in tasks {
+            if let existing = seen[task.id] {
+                if task.updated > existing.updated {
+                    seen[task.id] = task
+                }
+            } else {
+                seen[task.id] = task
+            }
+        }
+        if seen.count != tasks.count {
+            print("⚠️ Deduplicated \(tasks.count - seen.count) task(s) with duplicate UUIDs")
+            tasks = Array(seen.values)
+        }
     }
     
     private func loadSettings() {
@@ -406,11 +424,15 @@ class TaskStore: ObservableObject {
         markSaving()
         try content.write(to: taskFile, atomically: false, encoding: .utf8)
         print("✅ Task file written successfully")
-        
-        tasks.append(task)
+
+        // Guard against duplicating a task that was already added to memory
+        // (e.g. if the file-watcher fired and loadAllData ran while we were writing).
+        if !tasks.contains(where: { $0.id == task.id }) {
+            tasks.append(task)
+        }
         print("✅ Task added to tasks array. Total tasks: \(tasks.count)")
     }
-    
+
     func updateTask(_ task: Task) throws {
         guard let storageURL = storageURL else { return }
         
