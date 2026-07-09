@@ -40,13 +40,26 @@ struct Task: Identifiable, Codable, Hashable {
         self.body = body
     }
     
+    // Precompiled once and reused across all `fileName` computations — NSRegularExpression
+    // compilation is non-trivial and `replacingOccurrences(options: .regularExpression)`
+    // would otherwise recompile the pattern on every single call.
+    private static let nonSlugCharsRegex = try! NSRegularExpression(pattern: "[^a-z0-9-]")
+    private static let repeatedDashesRegex = try! NSRegularExpression(pattern: "-+")
+
     var fileName: String {
-        let slug = title
-            .lowercased()
-            .replacingOccurrences(of: " ", with: "-")
-            .replacingOccurrences(of: "[^a-z0-9-]", with: "", options: .regularExpression)
-            .replacingOccurrences(of: "-+", with: "-", options: .regularExpression) // collapse runs of dashes
-            .trimmingCharacters(in: CharacterSet(charactersIn: "-"))                 // strip leading/trailing dashes
+        let lowered = title.lowercased().replacingOccurrences(of: " ", with: "-")
+
+        let noSpecialCharsRange = NSRange(lowered.startIndex..., in: lowered)
+        let noSpecialChars = Task.nonSlugCharsRegex.stringByReplacingMatches(
+            in: lowered, options: [], range: noSpecialCharsRange, withTemplate: ""
+        )
+
+        let collapsedRange = NSRange(noSpecialChars.startIndex..., in: noSpecialChars)
+        let collapsed = Task.repeatedDashesRegex.stringByReplacingMatches(
+            in: noSpecialChars, options: [], range: collapsedRange, withTemplate: "-"
+        )
+
+        let slug = collapsed.trimmingCharacters(in: CharacterSet(charactersIn: "-"))
         // Fall back to a portion of the UUID so the file is never named ".md" (hidden)
         let safeSlug = slug.isEmpty ? id.uuidString.lowercased().prefix(8).description : slug
         return "\(safeSlug).md"

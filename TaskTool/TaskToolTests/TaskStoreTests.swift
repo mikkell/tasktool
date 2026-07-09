@@ -436,6 +436,47 @@ final class TaskStoreTests: XCTestCase {
         XCTAssertEqual(taskStore.tasks.first(where: { $0.id == sharedID })?.status, "In Progress")
     }
 
+    func testLoadAllDataPrefersCanonicalPlanOnDuplicateUUID() throws {
+        // Simulate a cloud-sync conflict after a plan rename: both "Work" (stale) and
+        // "MyWork" (canonical) folders exist on disk with the same task UUID.
+        // The canonical plan's copy must win, and the stale "Work" plan must be removed.
+        let canonical = Plan(name: "MyWork", color: "blue")
+        try taskStore.createPlan(canonical)
+
+        let sharedID = UUID()
+        // Stale copy in old folder – same UUID, older timestamp
+        let staleTask = Task(id: sharedID, title: "Task", plan: "Work", status: "To Do",
+                             updated: Date(timeIntervalSinceNow: -60))
+        // Canonical copy in new folder – same UUID, newer timestamp
+        let canonicalTask = Task(id: sharedID, title: "Task", plan: "MyWork", status: "In Progress",
+                                 updated: Date())
+
+        // Write stale task into a manually-created "Work" folder (as if cloud sync put it there).
+        let staleFolder = tempDir.appendingPathComponent("Work")
+        try FileManager.default.createDirectory(at: staleFolder, withIntermediateDirectories: true)
+        try MarkdownParser.serializePlan(Plan(name: "Work", color: "blue"))
+            .write(to: staleFolder.appendingPathComponent("plan.yaml"),
+                   atomically: false, encoding: .utf8)
+        try MarkdownParser.serializeTask(staleTask)
+            .write(to: staleFolder.appendingPathComponent("task.md"),
+                   atomically: false, encoding: .utf8)
+
+        // Write canonical task into the canonical "MyWork" folder.
+        let canonicalFolder = tempDir.appendingPathComponent("MyWork")
+        try MarkdownParser.serializeTask(canonicalTask)
+            .write(to: canonicalFolder.appendingPathComponent("task.md"),
+                   atomically: false, encoding: .utf8)
+
+        taskStore.loadAllData()
+
+        XCTAssertEqual(taskStore.tasks.filter { $0.id == sharedID }.count, 1,
+                       "Duplicate UUID across plans must be deduplicated")
+        XCTAssertEqual(taskStore.tasks.first(where: { $0.id == sharedID })?.plan, "MyWork",
+                       "Canonical plan must win over stale plan")
+        XCTAssertNil(taskStore.plans.first(where: { $0.name == "Work" }),
+                     "Stale plan folder must be removed when all its tasks were absorbed by a canonical plan")
+    }
+
     func testCreateTaskDoesNotDuplicateIfAlreadyInMemory() throws {
         // If loadAllData somehow ran between the file write and the tasks.append
         // inside createTask, the task would already be in memory. The guard must

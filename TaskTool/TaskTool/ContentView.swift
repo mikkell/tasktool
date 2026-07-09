@@ -23,6 +23,47 @@ extension Color {
     }
 }
 
+extension Animation {
+    /// Lightweight, snappy feedback for momentary interactive states — drag-target
+    /// highlights (sidebar rows, Kanban columns) and card hover. Kept short and firmly
+    /// damped so it reads as instant response rather than a bouncy flourish.
+    static let taskToolQuickFeedback = Animation.spring(response: 0.22, dampingFraction: 0.82)
+
+    /// Layout reflow for task lists — insertion, removal, and reordering when a task
+    /// moves between statuses or plans. Slightly slower than `.taskToolQuickFeedback` so
+    /// the move/fade transitions stay legible, while still feeling snappy.
+    static let taskToolReflow = Animation.spring(response: 0.32, dampingFraction: 0.78)
+}
+
+/// Standardized Cancel / primary-action button pair used at the bottom of every
+/// creation and edit sheet in the app. Always trailing-aligned (macOS HIG convention),
+/// with the primary action styled as a prominent blue button so the confirming action
+/// is unambiguous at a glance. Callers that need a leading element (e.g. a destructive
+/// "Delete" button) should place this inside their own `HStack` after a `Spacer()`.
+private struct DialogFooterButtons: View {
+    let confirmTitle: String
+    var confirmDisabled: Bool = false
+    var confirmShortcut: KeyboardShortcut = .defaultAction
+    let onCancel: () -> Void
+    let onConfirm: () -> Void
+
+    var body: some View {
+        HStack {
+            Spacer()
+
+            Button("Cancel", action: onCancel)
+                .keyboardShortcut(.cancelAction)
+
+            Button(confirmTitle, action: onConfirm)
+                .keyboardShortcut(confirmShortcut)
+                .buttonStyle(.borderedProminent)
+                .tint(.blue)
+                .disabled(confirmDisabled)
+        }
+        .frame(maxWidth: .infinity)
+    }
+}
+
 struct ContentView: View {
     @EnvironmentObject var taskStore: TaskStore
     @State private var showingFolderPicker = false
@@ -59,8 +100,8 @@ struct ContentView: View {
             NavigationSplitView {
                 List(selection: $selectedPlan) {
                     Section("Plans") {
-                        ForEach(taskStore.plans.sorted(by: { $0.order < $1.order }), id: \.id) { plan in
-                            PlanSidebarRow(plan: plan) { providers in
+                        ForEach(Array(taskStore.plans.sorted(by: { $0.order < $1.order }).enumerated()), id: \.element.id) { index, plan in
+                            PlanSidebarRow(plan: plan, shortcutNumber: index < 9 ? index + 1 : nil) { providers in
                                 handleTaskDropOnPlan(providers: providers, targetPlan: plan)
                             }
                             .contextMenu {
@@ -76,9 +117,9 @@ struct ContentView: View {
                             }
                         }
                         .onMove { from, to in
-                            print("📝 Moving plan from \(from) to \(to)")
+                            debugLog("📝 Moving plan from \(from) to \(to)")
                             var sortedPlans = taskStore.plans.sorted(by: { $0.order < $1.order })
-                            print("📋 Sorted plans before move: \(sortedPlans.map { "\($0.name): \($0.order)" })")
+                            debugLog("📋 Sorted plans before move: \(sortedPlans.map { "\($0.name): \($0.order)" })")
                             
                             // Move the plans
                             sortedPlans.move(fromOffsets: from, toOffset: to)
@@ -88,7 +129,7 @@ struct ContentView: View {
                                 sortedPlans[index].order = index
                             }
                             
-                            print("📋 Sorted plans after move: \(sortedPlans.map { "\($0.name): \($0.order)" })")
+                            debugLog("📋 Sorted plans after move: \(sortedPlans.map { "\($0.name): \($0.order)" })")
                             
                             // Update the in-memory plans array
                             taskStore.plans = sortedPlans
@@ -111,6 +152,16 @@ struct ContentView: View {
                 }
                 .id(taskStore.plans.map { "\($0.order)" }.joined(separator: ","))
                 .navigationSplitViewColumnWidth(min: 180, ideal: 200)
+                .background(
+                    // Hidden buttons wire up ⌘1-⌘9 to jump directly to the plan at that
+                    // sidebar position (by current sort order). Plans beyond the 9th don't
+                    // get a shortcut, matching the visible number badges in the sidebar.
+                    ForEach(1...9, id: \.self) { number in
+                        Button("") { selectPlan(atShortcutNumber: number) }
+                            .keyboardShortcut(KeyEquivalent(Character(String(number))), modifiers: .command)
+                            .hidden()
+                    }
+                )
                 .toolbar {
                     ToolbarItem(placement: .automatic) {
                         Menu {
@@ -190,6 +241,14 @@ struct ContentView: View {
         }
     }
     
+    /// Selects the plan at sidebar position `number` (1-based, matching the visible ⌘1-⌘9
+    /// badges). No-ops if there aren't that many plans.
+    private func selectPlan(atShortcutNumber number: Int) {
+        let sortedPlans = taskStore.plans.sorted(by: { $0.order < $1.order })
+        guard number >= 1, number <= sortedPlans.count else { return }
+        selectedPlan = sortedPlans[number - 1]
+    }
+    
     private func handleTaskDropOnPlan(providers: [NSItemProvider], targetPlan: Plan) -> Bool {
         guard let provider = providers.first else { return false }
         
@@ -216,17 +275,17 @@ struct ContentView: View {
                             // Map to the first status in the new plan if no match
                             if let firstStatus = targetPlan.statuses.sorted(by: { $0.order < $1.order }).first {
                                 task.status = firstStatus.name
-                                print("🔄 Task status changed from '\(originalTask.status)' to '\(firstStatus.name)'")
+                                debugLog("🔄 Task status changed from '\(originalTask.status)' to '\(firstStatus.name)'")
                             }
                         }
                         
                         do {
                             try taskStore.updateTask(task)
-                            print("📦 Task '\(task.title)' moved to plan '\(targetPlan.name)'")
+                            debugLog("📦 Task '\(task.title)' moved to plan '\(targetPlan.name)'")
                         } catch {
                             // Revert in-memory state so the UI stays consistent with disk
                             taskStore.tasks[taskIndex] = originalTask
-                            print("❌ Failed to move task '\(task.title)': \(error.localizedDescription)")
+                            debugLog("❌ Failed to move task '\(task.title)': \(error.localizedDescription)")
                         }
                     }
                 }
@@ -241,15 +300,24 @@ struct ContentView: View {
 /// when a task is dragged over it, making cross-plan moves obvious.
 private struct PlanSidebarRow: View {
     let plan: Plan
+    /// 1-9 shortcut number for this plan's position, or nil if beyond the first 9 plans.
+    let shortcutNumber: Int?
     let onDrop: ([NSItemProvider]) -> Bool
     @State private var isTargeted = false
 
     var body: some View {
         NavigationLink(value: plan) {
             HStack {
-                Circle()
-                    .fill(Color.from(string: plan.color))
-                    .frame(width: 12, height: 12)
+                ZStack {
+                    Circle()
+                        .fill(Color.from(string: plan.color))
+                        .frame(width: 18, height: 18)
+                    if let shortcutNumber {
+                        Text("\(shortcutNumber)")
+                            .font(.system(size: 10, weight: .bold))
+                            .foregroundColor(.white)
+                    }
+                }
                 Text(plan.name)
                 Spacer()
                 if isTargeted {
@@ -264,7 +332,7 @@ private struct PlanSidebarRow: View {
                 RoundedRectangle(cornerRadius: 6)
                     .fill(isTargeted ? Color.from(string: plan.color).opacity(0.18) : Color.clear)
             )
-            .animation(.spring(response: 0.2, dampingFraction: 0.75), value: isTargeted)
+            .animation(.taskToolQuickFeedback, value: isTargeted)
         }
         .onDrop(of: [.text], isTargeted: $isTargeted) { providers in
             onDrop(providers)
@@ -280,6 +348,7 @@ struct PlanDetailView: View {
     @State private var showingEditStatuses = false
     @State private var showingArchiveConfirmation = false
     @State private var searchText = ""
+    @FocusState private var isSearchFieldFocused: Bool
     
     var plan: Plan? {
         taskStore.plans.first(where: { $0.id == planId })
@@ -300,8 +369,14 @@ struct PlanDetailView: View {
         }
     }
     
+    /// Tasks grouped by status name, computed once per render instead of re-filtering
+    /// `filteredPlanTasks` from scratch for every Kanban column.
+    var tasksGroupedByStatus: [String: [Task]] {
+        Dictionary(grouping: filteredPlanTasks, by: { $0.status })
+    }
+
     func tasks(for status: Plan.TaskStatus) -> [Task] {
-        filteredPlanTasks.filter { $0.status == status.name }
+        tasksGroupedByStatus[status.name] ?? []
     }
     
     var doneStatusName: String? {
@@ -315,22 +390,49 @@ struct PlanDetailView: View {
     
     var body: some View {
         if let plan = plan {
-            HStack(spacing: 20) {
-                ForEach(plan.statuses.sorted(by: { $0.order < $1.order })) { status in
-                    KanbanColumn(
-                        title: status.name,
-                        tasks: tasks(for: status),
-                        color: Color.from(string: status.color),
-                        statusName: status.name,
-                        isDoneColumn: status.isDoneStatus,
-                        plan: plan
-                    )
+            GeometryReader { geo in
+                let columnCount = plan.statuses.count
+                let spacing: CGFloat = 20
+                let paddingTotal: CGFloat = 40  // .padding() = 20pt per side
+                let minColWidth: CGFloat = 280
+                let evenWidth = (geo.size.width - paddingTotal - spacing * CGFloat(max(columnCount - 1, 0))) / CGFloat(max(columnCount, 1))
+                let colWidth = max(minColWidth, evenWidth)
+
+                // Group once per render instead of re-filtering the full task list for every column.
+                let groupedTasks = tasksGroupedByStatus
+
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: spacing) {
+                        ForEach(plan.statuses.sorted(by: { $0.order < $1.order })) { status in
+                            KanbanColumn(
+                                title: status.name,
+                                tasks: groupedTasks[status.name] ?? [],
+                                color: Color.from(string: status.color),
+                                statusName: status.name,
+                                isDoneColumn: status.isDoneStatus,
+                                plan: plan
+                            )
+                            .frame(width: colWidth)
+                        }
+                    }
+                    // Scoped to this plan's (filtered) tasks only — Task is Equatable, so this
+                    // compares values directly instead of allocating a joined string every render.
+                    .animation(.taskToolReflow, value: filteredPlanTasks)
+                    .padding()
+                    .frame(minWidth: geo.size.width)
                 }
             }
-            .animation(.spring(response: 0.3, dampingFraction: 0.8), value: taskStore.tasks.map { "\($0.id)-\($0.status)" }.joined())
-            .padding()
             .navigationTitle(plan.name)
             .searchable(text: $searchText, placement: .toolbar, prompt: "Search tasks…")
+            .searchFocused($isSearchFieldFocused)
+            .background(
+                // SwiftUI's automatic Cmd-F for `.searchable` can silently fail to fire when the
+                // modifier is nested this deep (GeometryReader → NavigationSplitView detail).
+                // This hidden button guarantees the shortcut always focuses the search field.
+                Button("") { isSearchFieldFocused = true }
+                    .keyboardShortcut("f", modifiers: .command)
+                    .hidden()
+            )
             .toolbar {
                 ToolbarItem(placement: .primaryAction) {
                     Button(action: { showingNewTask = true }) {
@@ -376,7 +478,7 @@ struct PlanDetailView: View {
         do {
             try taskStore.archiveDoneTasks(for: plan, tasks: doneTasks)
         } catch {
-            print("❌ Failed to archive tasks: \(error.localizedDescription)")
+            debugLog("❌ Failed to archive tasks: \(error.localizedDescription)")
         }
     }
 }
@@ -446,14 +548,15 @@ struct KanbanColumn: View {
                             }
                     }
                 }
-                .animation(.spring(response: 0.3, dampingFraction: 0.7), value: tasks.map { $0.id })
+                // `tasks` is already Equatable ([Task]); no need to allocate a fresh [UUID] every render.
+                .animation(.taskToolReflow, value: tasks)
                 .padding()
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
         .frame(maxWidth: .infinity)
         .background(isTargeted ? color.opacity(0.15) : Color(nsColor: .controlBackgroundColor))
-        .animation(.spring(response: 0.25, dampingFraction: 0.8), value: isTargeted)
+        .animation(.taskToolQuickFeedback, value: isTargeted)
         .cornerRadius(12)
         .overlay(
             RoundedRectangle(cornerRadius: 12)
@@ -493,7 +596,7 @@ struct KanbanColumn: View {
                         } catch {
                             // Revert in-memory state so the UI stays consistent with disk
                             taskStore.tasks[taskIndex] = originalTask
-                            print("❌ Failed to update status for '\(task.title)': \(error.localizedDescription)")
+                            debugLog("❌ Failed to update status for '\(task.title)': \(error.localizedDescription)")
                         }
                     }
                 }
@@ -556,6 +659,14 @@ struct TaskCard: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
+            Text("#\(task.id.uuidString.prefix(8))")
+                .font(.system(.caption2, design: .monospaced))
+                .foregroundColor(.secondary)
+                .padding(.horizontal, 6)
+                .padding(.vertical, 2)
+                .background(Color.secondary.opacity(0.15))
+                .cornerRadius(4)
+
             Text(task.title)
                 .font(.headline)
 
@@ -598,10 +709,9 @@ struct TaskCard: View {
                 .stroke(Color.primary.opacity(0.12), lineWidth: 1)
         )
         .contentShape(Rectangle())
-        .scaleEffect(isHovered ? 1.015 : 1.0)
         .shadow(color: Color.black.opacity(isHovered ? 0.12 : 0.04), radius: isHovered ? 6 : 2, y: isHovered ? 3 : 1)
         .onHover { hovering in
-            withAnimation(.spring(response: 0.2, dampingFraction: 0.7)) {
+            withAnimation(.taskToolQuickFeedback) {
                 isHovered = hovering
             }
         }
@@ -641,13 +751,11 @@ struct NewPlanView: View {
                     .font(.caption)
             }
             
-            HStack {
-                Button("Cancel") {
-                    dismiss()
-                }
-                .keyboardShortcut(.cancelAction)
-                
-                Button("Create") {
+            DialogFooterButtons(
+                confirmTitle: "Create",
+                confirmDisabled: name.isEmpty,
+                onCancel: { dismiss() },
+                onConfirm: {
                     if taskStore.plans.contains(where: { $0.name.lowercased() == name.lowercased() }) {
                         errorMessage = "A plan named '\(name)' already exists"
                         showError = true
@@ -662,9 +770,7 @@ struct NewPlanView: View {
                         showError = true
                     }
                 }
-                .keyboardShortcut(.defaultAction)
-                .disabled(name.isEmpty)
-            }
+            )
         }
         .padding()
         .frame(width: 400)
@@ -683,40 +789,45 @@ struct NewTaskView: View {
     @State private var hasDueDate = false
     @State private var showError = false
     @State private var errorMessage = ""
+    @FocusState private var descriptionFocused: Bool
     
     var body: some View {
         VStack(spacing: 20) {
             Text("New Task")
                 .font(.title)
-            
-            Form {
-                LabeledContent("Task Title") {
+
+            Grid(horizontalSpacing: 16, verticalSpacing: 20) {
+                GridRow(alignment: .firstTextBaseline) {
+                    Text("Task Title")
+                        .gridColumnAlignment(.trailing)
+                        .foregroundStyle(.secondary)
                     TextField("", text: $title)
                         .textFieldStyle(.roundedBorder)
-                        .overlay(
-                            RoundedRectangle(cornerRadius: 5)
-                                .stroke(Color.gray.opacity(0.5), lineWidth: 1)
-                        )
                 }
-                
-                LabeledContent("Description") {
+
+                GridRow(alignment: .top) {
+                    Text("Description")
+                        .gridColumnAlignment(.trailing)
+                        .foregroundStyle(.secondary)
+                        .padding(.top, 3)
                     TextEditor(text: $taskBody)
                         .frame(height: 100)
+                        .focused($descriptionFocused)
                         .overlay(
                             RoundedRectangle(cornerRadius: 5)
-                                .stroke(Color.gray.opacity(0.5), lineWidth: 1)
+                                .stroke(descriptionFocused ? Color.accentColor : Color.gray.opacity(0.5),
+                                        lineWidth: descriptionFocused ? 2 : 1)
                         )
                 }
-                
-                LabeledContent("Tags") {
+
+                GridRow(alignment: .firstTextBaseline) {
+                    Text("Tags")
+                        .gridColumnAlignment(.trailing)
+                        .foregroundStyle(.secondary)
                     VStack(alignment: .leading, spacing: 8) {
                         HStack {
                             TextField("", text: $tagInput)
                                 .textFieldStyle(.roundedBorder)
-                                .overlay(
-                                    RoundedRectangle(cornerRadius: 5)
-                                        .stroke(Color.gray.opacity(0.5), lineWidth: 1)
-                                )
                             Button("Add") {
                                 let trimmed = tagInput.trimmingCharacters(in: .whitespaces)
                                 if !trimmed.isEmpty && !tags.contains(trimmed) {
@@ -725,7 +836,6 @@ struct NewTaskView: View {
                                 }
                             }
                         }
-                        
                         if !tags.isEmpty {
                             HStack {
                                 ForEach(tags, id: \.self) { tag in
@@ -746,37 +856,43 @@ struct NewTaskView: View {
                         }
                     }
                 }
-                
-                Toggle("Due Date", isOn: $hasDueDate)
-                    .onChange(of: hasDueDate) { _, newValue in
-                        if newValue && dueDate == nil {
-                            dueDate = Date()
-                        } else if !newValue {
-                            dueDate = nil
+
+                GridRow(alignment: .firstTextBaseline) {
+                    Text("").gridColumnAlignment(.trailing)
+                    Toggle("Due Date", isOn: $hasDueDate)
+                        .toggleStyle(.checkbox)
+                        .onChange(of: hasDueDate) { _, newValue in
+                            if newValue && dueDate == nil {
+                                dueDate = Date()
+                            } else if !newValue {
+                                dueDate = nil
+                            }
                         }
-                    }
+                }
+
                 if hasDueDate {
-                    DatePicker("Date", selection: Binding($dueDate, default: Date()), displayedComponents: .date)
+                    GridRow(alignment: .firstTextBaseline) {
+                        Text("").gridColumnAlignment(.trailing)
+                        DatePicker("", selection: Binding($dueDate, default: Date()), displayedComponents: .date)
+                            .labelsHidden()
+                    }
                 }
             }
-            .padding()
-            
+            .padding(24)
+
             if showError {
                 Text(errorMessage)
                     .foregroundColor(.red)
                     .font(.caption)
             }
-            
-            HStack {
-                Button("Cancel") {
-                    dismiss()
-                }
-                .keyboardShortcut(.cancelAction)
-                
-                Button("Create") {
-                    // Use the first status from the plan as the default
+
+            DialogFooterButtons(
+                confirmTitle: "Create",
+                confirmDisabled: title.isEmpty,
+                confirmShortcut: KeyboardShortcut(.return, modifiers: .command),
+                onCancel: { dismiss() },
+                onConfirm: {
                     let defaultStatus = plan.statuses.sorted(by: { $0.order < $1.order }).first?.name ?? "To Do"
-                    
                     let task = Task(
                         title: title,
                         plan: plan.name,
@@ -793,9 +909,7 @@ struct NewTaskView: View {
                         showError = true
                     }
                 }
-                .keyboardShortcut(.defaultAction)
-                .disabled(title.isEmpty)
-            }
+            )
         }
         .padding()
         .frame(width: 500)
@@ -815,41 +929,46 @@ struct NewTaskViewForStatus: View {
     @State private var hasDueDate = false
     @State private var showError = false
     @State private var errorMessage = ""
+    @FocusState private var descriptionFocused: Bool
     
     var body: some View {
         VStack(spacing: 20) {
             Text("New Task")
                 .font(.title)
-            
-            Form {
-                LabeledContent("Task Title") {
+
+            Grid(horizontalSpacing: 16, verticalSpacing: 20) {
+                GridRow(alignment: .firstTextBaseline) {
+                    Text("Task Title")
+                        .gridColumnAlignment(.trailing)
+                        .foregroundStyle(.secondary)
                     TextField("", text: $title)
                         .autocorrectionDisabled(false)
                         .textFieldStyle(.roundedBorder)
-                        .overlay(
-                            RoundedRectangle(cornerRadius: 5)
-                                .stroke(Color.gray.opacity(0.5), lineWidth: 1)
-                        )
                 }
-                
-                LabeledContent("Description") {
+
+                GridRow(alignment: .top) {
+                    Text("Description")
+                        .gridColumnAlignment(.trailing)
+                        .foregroundStyle(.secondary)
+                        .padding(.top, 3)
                     TextEditor(text: $taskBody)
                         .frame(height: 100)
+                        .focused($descriptionFocused)
                         .overlay(
                             RoundedRectangle(cornerRadius: 5)
-                                .stroke(Color.gray.opacity(0.5), lineWidth: 1)
+                                .stroke(descriptionFocused ? Color.accentColor : Color.gray.opacity(0.5),
+                                        lineWidth: descriptionFocused ? 2 : 1)
                         )
                 }
-                
-                LabeledContent("Tags") {
+
+                GridRow(alignment: .firstTextBaseline) {
+                    Text("Tags")
+                        .gridColumnAlignment(.trailing)
+                        .foregroundStyle(.secondary)
                     VStack(alignment: .leading, spacing: 8) {
                         HStack {
                             TextField("", text: $tagInput)
                                 .textFieldStyle(.roundedBorder)
-                                .overlay(
-                                    RoundedRectangle(cornerRadius: 5)
-                                        .stroke(Color.gray.opacity(0.5), lineWidth: 1)
-                                )
                             Button("Add") {
                                 let trimmed = tagInput.trimmingCharacters(in: .whitespaces)
                                 if !trimmed.isEmpty && !tags.contains(trimmed) {
@@ -858,7 +977,6 @@ struct NewTaskViewForStatus: View {
                                 }
                             }
                         }
-                        
                         if !tags.isEmpty {
                             HStack {
                                 ForEach(tags, id: \.self) { tag in
@@ -879,34 +997,42 @@ struct NewTaskViewForStatus: View {
                         }
                     }
                 }
-                
-                Toggle("Due Date", isOn: $hasDueDate)
-                    .onChange(of: hasDueDate) { _, newValue in
-                        if newValue && dueDate == nil {
-                            dueDate = Date()
-                        } else if !newValue {
-                            dueDate = nil
+
+                GridRow(alignment: .firstTextBaseline) {
+                    Text("").gridColumnAlignment(.trailing)
+                    Toggle("Due Date", isOn: $hasDueDate)
+                        .toggleStyle(.checkbox)
+                        .onChange(of: hasDueDate) { _, newValue in
+                            if newValue && dueDate == nil {
+                                dueDate = Date()
+                            } else if !newValue {
+                                dueDate = nil
+                            }
                         }
-                    }
+                }
+
                 if hasDueDate {
-                    DatePicker("Date", selection: Binding($dueDate, default: Date()), displayedComponents: .date)
+                    GridRow(alignment: .firstTextBaseline) {
+                        Text("").gridColumnAlignment(.trailing)
+                        DatePicker("", selection: Binding($dueDate, default: Date()), displayedComponents: .date)
+                            .labelsHidden()
+                    }
                 }
             }
-            .padding()
-            
+            .padding(24)
+
             if showError {
                 Text(errorMessage)
                     .foregroundColor(.red)
                     .font(.caption)
             }
-            
-            HStack {
-                Button("Cancel") {
-                    dismiss()
-                }
-                .keyboardShortcut(.cancelAction)
-                
-                Button("Create") {
+
+            DialogFooterButtons(
+                confirmTitle: "Create",
+                confirmDisabled: title.isEmpty,
+                confirmShortcut: KeyboardShortcut(.return, modifiers: .command),
+                onCancel: { dismiss() },
+                onConfirm: {
                     let task = Task(
                         title: title,
                         plan: plan.name,
@@ -923,9 +1049,7 @@ struct NewTaskViewForStatus: View {
                         showError = true
                     }
                 }
-                .keyboardShortcut(.defaultAction)
-                .disabled(title.isEmpty)
-            }
+            )
         }
         .padding()
         .frame(width: 500)
@@ -1052,6 +1176,7 @@ struct TaskDetailView: View {
     @State private var subtasks: [SubTask]
     @State private var bodyNotes: String
     @State private var newSubtaskTitle = ""
+    @FocusState private var subtaskFieldFocused: Bool
 
     private struct SubTask: Identifiable {
         var id = UUID()
@@ -1130,12 +1255,32 @@ struct TaskDetailView: View {
                         Text("Status")
                             .font(.headline)
                         if let plan = plan {
-                            Picker("Status", selection: $editedTask.status) {
-                                ForEach(plan.statuses.sorted(by: { $0.order < $1.order })) { status in
-                                    Text(status.name).tag(status.name)
+                            let sortedStatuses = plan.statuses.sorted(by: { $0.order < $1.order })
+                            if sortedStatuses.count <= 4 {
+                                Picker("Status", selection: $editedTask.status) {
+                                    ForEach(sortedStatuses) { status in
+                                        Text(status.name).tag(status.name)
+                                    }
+                                }
+                                .pickerStyle(.segmented)
+                            } else {
+                                LazyVGrid(columns: [GridItem(.adaptive(minimum: 120), spacing: 6)], alignment: .leading, spacing: 6) {
+                                    ForEach(sortedStatuses) { status in
+                                        let isSelected = editedTask.status == status.name
+                                        Button(action: { editedTask.status = status.name }) {
+                                            Text(status.name)
+                                                .font(.subheadline)
+                                                .frame(maxWidth: .infinity)
+                                                .padding(.vertical, 5)
+                                                .background(isSelected ? Color.accentColor : Color(nsColor: .controlColor))
+                                                .foregroundColor(isSelected ? .white : .primary)
+                                                .cornerRadius(6)
+                                                .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.secondary.opacity(0.3), lineWidth: 1))
+                                        }
+                                        .buttonStyle(.plain)
+                                    }
                                 }
                             }
-                            .pickerStyle(.segmented)
                         }
                     }
                     
@@ -1266,6 +1411,7 @@ struct TaskDetailView: View {
                                 .font(.body)
                             TextField("Add sub-task…", text: $newSubtaskTitle)
                                 .textFieldStyle(.plain)
+                                .focused($subtaskFieldFocused)
                                 .onSubmit { commitNewSubtask() }
                             if !newSubtaskTitle.isEmpty {
                                 Button("Add") { commitNewSubtask() }
@@ -1274,6 +1420,7 @@ struct TaskDetailView: View {
                                     .font(.caption)
                             }
                         }
+                        .submitScope(true)
                         .padding(.horizontal, 8)
                         .padding(.vertical, 5)
                         .background(Color(nsColor: .controlBackgroundColor).opacity(0.5))
@@ -1332,8 +1479,7 @@ struct TaskDetailView: View {
                         showError = true
                     }
                 }
-                
-                Spacer()
+                .foregroundStyle(.red)
                 
                 if showError {
                     Text(errorMessage)
@@ -1341,16 +1487,13 @@ struct TaskDetailView: View {
                         .font(.caption)
                 }
                 
-                Button("Cancel") {
-                    dismiss()
-                }
-                .keyboardShortcut(.cancelAction)
-                
-                Button("Save") {
-                    saveAndClose()
-                }
-                .keyboardShortcut("s", modifiers: [.command])
-                .disabled(editedTask.title.isEmpty)
+                DialogFooterButtons(
+                    confirmTitle: "Save",
+                    confirmDisabled: editedTask.title.isEmpty,
+                    confirmShortcut: KeyboardShortcut("s", modifiers: [.command]),
+                    onCancel: { dismiss() },
+                    onConfirm: { saveAndClose() }
+                )
             }
             .padding()
             .background(Color(nsColor: .controlBackgroundColor))
@@ -1369,6 +1512,7 @@ struct TaskDetailView: View {
         subtasks.append(SubTask(title: trimmed, isCompleted: false))
         newSubtaskTitle = ""
         rebuildBody()
+        subtaskFieldFocused = true
     }
 
     private func saveAndClose() {
@@ -1489,19 +1633,14 @@ struct EditStatusesView: View {
                     Text(errorMessage)
                         .foregroundColor(.red)
                         .font(.caption)
-                    
-                    Spacer()
                 }
                 
-                Button("Cancel") {
-                    dismiss()
-                }
-                .keyboardShortcut(.cancelAction)
-                
-                Button("Save") {
-                    saveStatuses()
-                }
-                .keyboardShortcut("s", modifiers: [.command])
+                DialogFooterButtons(
+                    confirmTitle: "Save",
+                    confirmShortcut: KeyboardShortcut("s", modifiers: [.command]),
+                    onCancel: { dismiss() },
+                    onConfirm: { saveStatuses() }
+                )
             }
             .padding()
             .background(Color(nsColor: .controlBackgroundColor))
@@ -1580,18 +1719,12 @@ struct EditPlanView: View {
                     .font(.caption)
             }
             
-            HStack {
-                Button("Cancel") {
-                    dismiss()
-                }
-                .keyboardShortcut(.cancelAction)
-                
-                Button("Save") {
-                    savePlan()
-                }
-                .keyboardShortcut(.defaultAction)
-                .disabled(name.isEmpty)
-            }
+            DialogFooterButtons(
+                confirmTitle: "Save",
+                confirmDisabled: name.isEmpty,
+                onCancel: { dismiss() },
+                onConfirm: { savePlan() }
+            )
         }
         .padding()
         .frame(width: 400)

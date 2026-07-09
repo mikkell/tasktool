@@ -9,7 +9,11 @@ import Foundation
 import Yams
 
 struct MarkdownParser {
-    
+
+    // Shared across all parse/serialize calls — ISO8601DateFormatter is relatively expensive
+    // to instantiate and is not mutated after creation, so a single instance is safe to reuse.
+    private static let iso8601Formatter = ISO8601DateFormatter()
+
     static func parseTask(from content: String, plan: String) throws -> Task {
         let components = splitFrontmatter(content)
         guard let frontmatter = components.frontmatter else {
@@ -28,7 +32,7 @@ struct MarkdownParser {
         let status = metadata["status"] as? String ?? "To Do"
         let tags = metadata["tags"] as? [String] ?? []
         
-        let dateFormatter = ISO8601DateFormatter()
+        let dateFormatter = iso8601Formatter
         // Yams may parse ISO8601 timestamps as native Date objects rather than Strings.
         // The helper handles both cases so date fields round-trip correctly.
         func parseDate(_ key: String, fallback: Date = Date()) -> Date {
@@ -59,7 +63,7 @@ struct MarkdownParser {
     }
     
     static func serializeTask(_ task: Task) -> String {
-        let dateFormatter = ISO8601DateFormatter()
+        let dateFormatter = iso8601Formatter
         
         var frontmatter = """
         ---
@@ -100,7 +104,7 @@ struct MarkdownParser {
         let color = metadata["color"] as? String ?? "blue"
         let description = metadata["description"] as? String ?? ""
         
-        let dateFormatter = ISO8601DateFormatter()
+        let dateFormatter = iso8601Formatter
         let created: Date
         if let s = metadata["created"] as? String { created = dateFormatter.date(from: s) ?? Date() }
         else if let d = metadata["created"] as? Date { created = d }
@@ -138,7 +142,7 @@ struct MarkdownParser {
     }
     
     static func serializePlan(_ plan: Plan) -> String {
-        let dateFormatter = ISO8601DateFormatter()
+        let dateFormatter = iso8601Formatter
         
         var yaml = """
         # Plan: \(plan.name)

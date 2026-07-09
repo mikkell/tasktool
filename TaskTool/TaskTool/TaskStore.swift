@@ -8,6 +8,15 @@
 import Foundation
 import Combine
 
+/// Debug-only logging. The `@autoclosure` defers string interpolation so the
+/// (sometimes expensive, e.g. array-mapping) message is never built in Release builds.
+@inline(__always)
+func debugLog(_ message: @autoclosure () -> String) {
+    #if DEBUG
+    print(message())
+    #endif
+}
+
 @MainActor
 class TaskStore: ObservableObject {
     @Published var plans: [Plan] = []
@@ -17,20 +26,21 @@ class TaskStore: ObservableObject {
     
     private let fileManager = FileManager.default
     private var fileWatcher: DispatchSourceFileSystemObject?
+    private var planWatchers: [String: DispatchSourceFileSystemObject] = [:]  // keyed by plan folder name
     private var isSaving = false  // Flag to prevent reload during save
     private var reloadDebounceWork: DispatchWorkItem?  // Debounce rapid file system events
     private var savingWorkItem: DispatchWorkItem?  // Single cancellable timer for isSaving reset
     
     func setStorageLocation(_ url: URL) {
-        print("📍 setStorageLocation called with: \(url.path)")
+        debugLog("📍 setStorageLocation called with: \(url.path)")
         
         // Start accessing security-scoped resource
         guard url.startAccessingSecurityScopedResource() else {
-            print("❌ Failed to access security-scoped resource")
+            debugLog("❌ Failed to access security-scoped resource")
             return
         }
         
-        print("✅ Successfully accessed security-scoped resource")
+        debugLog("✅ Successfully accessed security-scoped resource")
         
         self.storageURL = url
         
@@ -42,9 +52,9 @@ class TaskStore: ObservableObject {
                 relativeTo: nil
             )
             UserDefaults.standard.set(bookmarkData, forKey: "storageLocationBookmark")
-            print("✅ Saved security-scoped bookmark")
+            debugLog("✅ Saved security-scoped bookmark")
         } catch {
-            print("❌ Failed to create bookmark: \(error)")
+            debugLog("❌ Failed to create bookmark: \(error)")
         }
         
         loadAllData()
@@ -66,20 +76,20 @@ class TaskStore: ObservableObject {
             )
             
             guard url.startAccessingSecurityScopedResource() else {
-                print("Failed to access stored location")
+                debugLog("Failed to access stored location")
                 return
             }
             
             if isStale {
                 // Bookmark is stale (e.g. volume remounted, file moved). Refresh it.
-                print("⚠️ Bookmark is stale, refreshing...")
+                debugLog("⚠️ Bookmark is stale, refreshing...")
                 if let freshData = try? url.bookmarkData(
                     options: .withSecurityScope,
                     includingResourceValuesForKeys: nil,
                     relativeTo: nil
                 ) {
                     UserDefaults.standard.set(freshData, forKey: "storageLocationBookmark")
-                    print("✅ Refreshed security-scoped bookmark")
+                    debugLog("✅ Refreshed security-scoped bookmark")
                 }
             }
             
@@ -87,7 +97,7 @@ class TaskStore: ObservableObject {
             loadAllData()
             startWatching()
         } catch {
-            print("Failed to resolve bookmark: \(error)")
+            debugLog("Failed to resolve bookmark: \(error)")
         }
     }
     
@@ -129,40 +139,63 @@ class TaskStore: ObservableObject {
         // Apply order from settings
         applyPlanOrder()
 
-        // Deduplicate tasks by UUID — two .md files in the same folder can share a UUID
-        // (e.g. OneDrive sync conflict copies). Keep the entry with the newest `updated`
-        // timestamp so the most recent state wins.
+        // Deduplicate tasks that share a UUID.  When the same task appears in multiple plan
+        // folders (e.g. a cloud-sync conflict after a rename), prefer the copy whose plan is
+        // listed in settings.planOrder ("canonical"). Fall back to newest `updated` as a
+        // tie-breaker when both (or neither) copies are canonical.
+        let canonicalPlanNames = Set(settings.planOrder)
         var seen: [UUID: Task] = [:]
+        var movedAwayFrom = Set<String>()   // plan names whose tasks were displaced by a canonical copy
+
         for task in tasks {
             if let existing = seen[task.id] {
-                if task.updated > existing.updated {
+                let taskCanonical     = canonicalPlanNames.contains(task.plan)
+                let existingCanonical = canonicalPlanNames.contains(existing.plan)
+                // Canonical always beats non-canonical; tie-break on newest `updated`.
+                let preferNew = taskCanonical != existingCanonical
+                    ? taskCanonical
+                    : task.updated > existing.updated
+                if preferNew {
+                    movedAwayFrom.insert(existing.plan)
                     seen[task.id] = task
+                } else {
+                    movedAwayFrom.insert(task.plan)
                 }
             } else {
                 seen[task.id] = task
             }
         }
         if seen.count != tasks.count {
-            print("⚠️ Deduplicated \(tasks.count - seen.count) task(s) with duplicate UUIDs")
+            debugLog("⚠️ Deduplicated \(tasks.count - seen.count) task(s) with duplicate UUIDs")
             tasks = Array(seen.values)
         }
+
+        // Remove non-canonical plans whose tasks were entirely absorbed by canonical equivalents.
+        // This collapses ghost folders left behind by cloud-sync conflicts after a rename or
+        // delete, while keeping genuinely new external plans (empty or with unique tasks).
+        if !canonicalPlanNames.isEmpty {
+            plans = plans.filter { canonicalPlanNames.contains($0.name) || !movedAwayFrom.contains($0.name) }
+        }
+
+        // Keep plan-level directory watchers in sync with the current plan list.
+        updatePlanWatchers()
     }
     
     private func loadSettings() {
         guard let storageURL = storageURL else { return }
         let settingsFile = storageURL.appendingPathComponent("settings.yaml")
         
-        print("📁 Loading settings from: \(settingsFile.path)")
+        debugLog("📁 Loading settings from: \(settingsFile.path)")
         
         if fileManager.fileExists(atPath: settingsFile.path),
            let content = try? String(contentsOf: settingsFile, encoding: .utf8),
            let loadedSettings = try? MarkdownParser.parseSettings(from: content) {
             settings = loadedSettings
-            print("✅ Settings loaded: \(settings.planOrder)")
+            debugLog("✅ Settings loaded: \(settings.planOrder)")
         } else {
             // Create default settings file if it doesn't exist
             settings = Settings()
-            print("📝 Creating default settings file")
+            debugLog("📝 Creating default settings file")
             try? saveSettings()
         }
     }
@@ -171,12 +204,12 @@ class TaskStore: ObservableObject {
         guard let storageURL = storageURL else { return }
         let settingsFile = storageURL.appendingPathComponent("settings.yaml")
         let content = MarkdownParser.serializeSettings(settings)
-        print("💾 Saving settings: \(settings.planOrder)")
+        debugLog("💾 Saving settings: \(settings.planOrder)")
         
         markSaving()
         try content.write(to: settingsFile, atomically: false, encoding: .utf8)
         
-        print("✅ Settings saved to: \(settingsFile.path)")
+        debugLog("✅ Settings saved to: \(settingsFile.path)")
     }
     
     /// Suppresses file-watcher reloads for 2.5 s — long enough for OneDrive to finish syncing.
@@ -196,9 +229,9 @@ class TaskStore: ObservableObject {
     }
     
     private func applyPlanOrder() {
-        print("📊 applyPlanOrder called")
-        print("📊 Settings planOrder: \(settings.planOrder)")
-        print("📊 Current plans before ordering: \(plans.map { "\($0.name): \($0.order)" })")
+        debugLog("📊 applyPlanOrder called")
+        debugLog("📊 Settings planOrder: \(settings.planOrder)")
+        debugLog("📊 Current plans before ordering: \(plans.map { "\($0.name): \($0.order)" })")
         
         // Create a dictionary for quick lookup
         var planDict: [String: Plan] = [:]
@@ -228,7 +261,7 @@ class TaskStore: ObservableObject {
         }
         
         plans = orderedPlans
-        print("📊 Plans after ordering: \(plans.map { "\($0.name): \($0.order)" })")
+        debugLog("📊 Plans after ordering: \(plans.map { "\($0.name): \($0.order)" })")
     }
     
     private func loadPlan(from url: URL, name: String) -> Plan? {
@@ -255,39 +288,45 @@ class TaskStore: ObservableObject {
     }
     
     func createPlan(_ plan: Plan) throws {
-        print("📝 createPlan called for: \(plan.name)")
+        debugLog("📝 createPlan called for: \(plan.name)")
         guard let storageURL = storageURL else {
-            print("❌ storageURL is nil")
+            debugLog("❌ storageURL is nil")
             return
         }
         
-        print("📂 Storage URL: \(storageURL.path)")
+        debugLog("📂 Storage URL: \(storageURL.path)")
         
         // Assign order based on current plan count
         var newPlan = plan
         newPlan.order = plans.count
         
         let planFolder = storageURL.appendingPathComponent(newPlan.folderName)
-        print("📁 Creating folder at: \(planFolder.path)")
+        debugLog("📁 Creating folder at: \(planFolder.path)")
         
         try fileManager.createDirectory(at: planFolder, withIntermediateDirectories: true)
-        print("✅ Folder created successfully")
+        debugLog("✅ Folder created successfully")
         
         let planFile = planFolder.appendingPathComponent("plan.yaml")
         let content = MarkdownParser.serializePlan(newPlan)
         
-        print("📄 Writing plan.yaml to: \(planFile.path)")
+        debugLog("📄 Writing plan.yaml to: \(planFile.path)")
         markSaving()
         try content.write(to: planFile, atomically: false, encoding: .utf8)
-        print("✅ Plan file written successfully")
+        debugLog("✅ Plan file written successfully")
         
         plans.append(newPlan)
+        
+        // Start watching the new plan directory right away so external task changes are detected.
+        if fileWatcher != nil,
+           let watcher = makeDirectoryWatcher(for: storageURL.appendingPathComponent(newPlan.folderName)) {
+            planWatchers[newPlan.folderName] = watcher
+        }
         
         // Update settings with new plan order
         settings.planOrder.append(newPlan.name)
         try saveSettings()
         
-        print("✅ Plan added to plans array. Total plans: \(plans.count)")
+        debugLog("✅ Plan added to plans array. Total plans: \(plans.count)")
     }
     
     func updatePlan(_ plan: Plan) throws {
@@ -334,6 +373,10 @@ class TaskStore: ObservableObject {
     
     func deletePlan(_ plan: Plan) throws {
         guard let storageURL = storageURL else { return }
+        
+        // Cancel the plan directory watcher before removing the folder.
+        planWatchers[plan.folderName]?.cancel()
+        planWatchers.removeValue(forKey: plan.folderName)
         
         markSaving()
         let planFolder = storageURL.appendingPathComponent(plan.folderName)
@@ -387,21 +430,31 @@ class TaskStore: ObservableObject {
             settings.planOrder[index] = newName
             try saveSettings()
         }
+
+        // Replace the plan folder watcher under the new name.
+        // The old file descriptor may still follow the inode after the rename,
+        // but re-opening the new path is cleaner and more reliable.
+        planWatchers[oldName]?.cancel()
+        planWatchers.removeValue(forKey: oldName)
+        if fileWatcher != nil,
+           let watcher = makeDirectoryWatcher(for: newPlanFolder) {
+            planWatchers[newName] = watcher
+        }
     }
     
     func createTask(_ task: Task) throws {
-        print("📝 createTask called for: \(task.title)")
+        debugLog("📝 createTask called for: \(task.title)")
         guard let storageURL = storageURL else {
-            print("❌ storageURL is nil")
+            debugLog("❌ storageURL is nil")
             return
         }
         
         let planFolder = storageURL.appendingPathComponent(task.plan)
-        print("📂 Plan folder: \(planFolder.path)")
+        debugLog("📂 Plan folder: \(planFolder.path)")
         
         // Check if plan folder exists
         guard fileManager.fileExists(atPath: planFolder.path) else {
-            print("❌ Plan folder doesn't exist: \(planFolder.path)")
+            debugLog("❌ Plan folder doesn't exist: \(planFolder.path)")
             throw NSError(domain: "TaskStore", code: 1, userInfo: [NSLocalizedDescriptionKey: "Plan folder '\(task.plan)' does not exist"])
         }
         
@@ -413,24 +466,24 @@ class TaskStore: ObservableObject {
             let base = (task.fileName as NSString).deletingPathExtension
             let uniqueName = "\(base)-\(task.id.uuidString.prefix(8)).md"
             taskFile = planFolder.appendingPathComponent(uniqueName)
-            print("⚠️ Filename collision detected, using: \(uniqueName)")
+            debugLog("⚠️ Filename collision detected, using: \(uniqueName)")
         }
         
-        print("📄 Creating task file: \(taskFile.path)")
+        debugLog("📄 Creating task file: \(taskFile.path)")
         
         let content = MarkdownParser.serializeTask(task)
-        print("📝 Task content length: \(content.count) characters")
+        debugLog("📝 Task content length: \(content.count) characters")
         
         markSaving()
         try content.write(to: taskFile, atomically: false, encoding: .utf8)
-        print("✅ Task file written successfully")
+        debugLog("✅ Task file written successfully")
 
         // Guard against duplicating a task that was already added to memory
         // (e.g. if the file-watcher fired and loadAllData ran while we were writing).
         if !tasks.contains(where: { $0.id == task.id }) {
             tasks.append(task)
         }
-        print("✅ Task added to tasks array. Total tasks: \(tasks.count)")
+        debugLog("✅ Task added to tasks array. Total tasks: \(tasks.count)")
     }
 
     func updateTask(_ task: Task) throws {
@@ -438,7 +491,7 @@ class TaskStore: ObservableObject {
         
         // Find the old task to check if filename or plan changed
         guard let index = tasks.firstIndex(where: { $0.id == task.id }) else {
-            print("❌ Task not found in tasks array")
+            debugLog("❌ Task not found in tasks array")
             return
         }
         
@@ -457,16 +510,16 @@ class TaskStore: ObservableObject {
         markSaving()
         
         if oldTask.plan != task.plan {
-            print("📦 Moving task from '\(oldTask.plan)' to '\(task.plan)'")
+            debugLog("📦 Moving task from '\(oldTask.plan)' to '\(task.plan)'")
             
             // Write to new location FIRST — if this fails, old file is preserved
             try content.write(to: newTaskFile, atomically: false, encoding: .utf8)
-            print("✅ Task written to new plan")
+            debugLog("✅ Task written to new plan")
             
             // Only delete old file after new file is confirmed on disk
             if fileManager.fileExists(atPath: oldTaskFile.path) {
                 try fileManager.removeItem(at: oldTaskFile)
-                print("🗑️ Deleted old task file")
+                debugLog("🗑️ Deleted old task file")
             }
         } else {
             // Write to the new/current filename first
@@ -529,7 +582,7 @@ class TaskStore: ObservableObject {
         // Create archive folder if it doesn't exist
         if !fileManager.fileExists(atPath: archiveFolder.path) {
             try fileManager.createDirectory(at: archiveFolder, withIntermediateDirectories: true)
-            print("📁 Created archive folder at: \(archiveFolder.path)")
+            debugLog("📁 Created archive folder at: \(archiveFolder.path)")
         }
         
         // Move each done task to the archive folder
@@ -541,14 +594,14 @@ class TaskStore: ObservableObject {
             
             if fileManager.fileExists(atPath: currentFile.path) {
                 try fileManager.moveItem(at: currentFile, to: archivedFile)
-                print("📦 Archived: \(task.title)")
+                debugLog("📦 Archived: \(task.title)")
             }
             
             // Remove from in-memory array
             tasks.removeAll { $0.id == task.id }
         }
         
-        print("✅ Archived \(doneTasks.count) task(s)")
+        debugLog("✅ Archived \(doneTasks.count) task(s)")
     }
     
     private func startWatching() {
@@ -556,36 +609,8 @@ class TaskStore: ObservableObject {
         
         stopWatching()
         
-        let descriptor = open(storageURL.path, O_EVTONLY)
-        guard descriptor >= 0 else { return }
-        
-        let source = DispatchSource.makeFileSystemObjectSource(
-            fileDescriptor: descriptor,
-            eventMask: [.write, .delete, .extend],
-            queue: DispatchQueue.main
-        )
-        
-        source.setEventHandler { [weak self] in
-            guard let self = self, !self.isSaving else { return }
-            
-            // Debounce: cancel any pending reload and schedule a new one after 1.5 s.
-            // This prevents multiple rapid OneDrive sync events from hammering loadAllData().
-            self.reloadDebounceWork?.cancel()
-            let work = DispatchWorkItem { [weak self] in
-                guard let self = self, !self.isSaving else { return }
-                print("📂 File system change detected, reloading...")
-                self.loadAllData()
-            }
-            self.reloadDebounceWork = work
-            DispatchQueue.main.asyncAfter(deadline: .now() + 1.5, execute: work)
-        }
-        
-        source.setCancelHandler {
-            close(descriptor)
-        }
-        
-        source.resume()
-        fileWatcher = source
+        fileWatcher = makeDirectoryWatcher(for: storageURL)
+        updatePlanWatchers()
     }
     
     private func stopWatching() {
@@ -593,5 +618,66 @@ class TaskStore: ObservableObject {
         reloadDebounceWork = nil
         fileWatcher?.cancel()
         fileWatcher = nil
+        for watcher in planWatchers.values { watcher.cancel() }
+        planWatchers.removeAll()
+    }
+
+    /// Creates a `DispatchSourceFileSystemObject` that watches `url` for any write,
+    /// delete, or extend event and debounces them into a single `loadAllData()` call.
+    private func makeDirectoryWatcher(for url: URL) -> DispatchSourceFileSystemObject? {
+        let descriptor = open(url.path, O_EVTONLY)
+        guard descriptor >= 0 else { return nil }
+
+        let source = DispatchSource.makeFileSystemObjectSource(
+            fileDescriptor: descriptor,
+            eventMask: [.write, .delete, .extend],
+            queue: DispatchQueue.main
+        )
+
+        source.setEventHandler { [weak self] in
+            guard let self = self, !self.isSaving else { return }
+
+            // Debounce: cancel any pending reload and schedule a new one after 1.5 s.
+            // This prevents multiple rapid sync events from hammering loadAllData().
+            self.reloadDebounceWork?.cancel()
+            let work = DispatchWorkItem { [weak self] in
+                guard let self = self, !self.isSaving else { return }
+                debugLog("📂 File system change detected, reloading...")
+                self.loadAllData()
+            }
+            self.reloadDebounceWork = work
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.5, execute: work)
+        }
+
+        source.setCancelHandler {
+            close(descriptor)
+        }
+
+        source.resume()
+        return source
+    }
+
+    /// Adds watchers for plan folders that don't have one yet, and removes watchers
+    /// for plan folders that no longer exist.  No-ops when the root watcher is inactive
+    /// (e.g. in unit tests where startWatching() is never called).
+    private func updatePlanWatchers() {
+        guard fileWatcher != nil, let storageURL = storageURL else { return }
+
+        let currentFolderNames = Set(plans.map { $0.folderName })
+
+        // Remove watchers for plans that have been deleted or renamed.
+        let staleNames = planWatchers.keys.filter { !currentFolderNames.contains($0) }
+        for folderName in staleNames {
+            planWatchers[folderName]?.cancel()
+            planWatchers.removeValue(forKey: folderName)
+        }
+
+        // Add watchers for plans that don't have one yet.
+        for plan in plans where planWatchers[plan.folderName] == nil {
+            let planFolder = storageURL.appendingPathComponent(plan.folderName)
+            if let watcher = makeDirectoryWatcher(for: planFolder) {
+                planWatchers[plan.folderName] = watcher
+            }
+        }
     }
 }
