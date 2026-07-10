@@ -868,6 +868,7 @@ struct NewTaskView: View {
                                 dueDate = nil
                             }
                         }
+                        .frame(maxWidth: .infinity, alignment: .leading)
                 }
 
                 if hasDueDate {
@@ -875,6 +876,7 @@ struct NewTaskView: View {
                         Text("").gridColumnAlignment(.trailing)
                         DatePicker("", selection: Binding($dueDate, default: Date()), displayedComponents: .date)
                             .labelsHidden()
+                            .frame(maxWidth: .infinity, alignment: .leading)
                     }
                 }
             }
@@ -1009,6 +1011,7 @@ struct NewTaskViewForStatus: View {
                                 dueDate = nil
                             }
                         }
+                        .frame(maxWidth: .infinity, alignment: .leading)
                 }
 
                 if hasDueDate {
@@ -1016,6 +1019,7 @@ struct NewTaskViewForStatus: View {
                         Text("").gridColumnAlignment(.trailing)
                         DatePicker("", selection: Binding($dueDate, default: Date()), displayedComponents: .date)
                             .labelsHidden()
+                            .frame(maxWidth: .infinity, alignment: .leading)
                     }
                 }
             }
@@ -1069,23 +1073,54 @@ extension Binding {
 /// as async image previews. Also provides a field to paste new image URLs.
 private struct TaskImagesSection: View {
     @Binding var bodyText: String
+    /// The plan's on-disk folder, used to resolve relative attachment paths (e.g.
+    /// "attachments/photo.png") produced by dropping/pasting a local image onto the task.
+    let planFolder: URL?
+    /// The plan name, used to import dropped/pasted/browsed images via `TaskStore`.
+    let planName: String
     let onChanged: () -> Void
+    let onError: (String) -> Void
+    @EnvironmentObject var taskStore: TaskStore
     @State private var imageURL = ""
     @State private var isAddingImage = false
+    @State private var isDropTargeted = false
 
+    // Captures the link target for any markdown image, whether it's a remote URL
+    // (https://...) or a relative path to a locally-imported attachment.
     private static let imageRegex = try? NSRegularExpression(
-        pattern: #"!\[([^\]]*)\]\((https?://[^\)]+)\)"#
+        pattern: #"!\[([^\]]*)\]\(([^\)]+)\)"#
     )
+
+    private static let imageFileExtensions: Set<String> = [
+        "png", "jpg", "jpeg", "gif", "heic", "heif", "webp", "bmp", "tiff", "tif"
+    ]
+
+    // Preferred order to request pasted image data in: prefer compact formats over
+    // raw TIFF (which is what NSPasteboard commonly offers first for clipboard images).
+    private static let pasteImageTypes: [(type: UTType, ext: String)] = [
+        (.png, "png"), (.jpeg, "jpg"), (.gif, "gif"), (.tiff, "tiff")
+    ]
 
     private var imageURLs: [(alt: String, url: URL)] {
         guard let regex = Self.imageRegex else { return [] }
         let range = NSRange(bodyText.startIndex..., in: bodyText)
         return regex.matches(in: bodyText, range: range).compactMap { match in
             guard let altRange = Range(match.range(at: 1), in: bodyText),
-                  let urlRange = Range(match.range(at: 2), in: bodyText),
-                  let url = URL(string: String(bodyText[urlRange])) else { return nil }
+                  let pathRange = Range(match.range(at: 2), in: bodyText) else { return nil }
+            let rawPath = String(bodyText[pathRange])
+            guard let url = Self.resolvedURL(for: rawPath, planFolder: planFolder) else { return nil }
             return (alt: String(bodyText[altRange]), url: url)
         }
+    }
+
+    /// Resolves a markdown image target to a loadable URL. Remote links (with a scheme,
+    /// e.g. "https://...") are used as-is; anything else is treated as a path relative
+    /// to the plan folder, matching how `importAttachment` stores dropped images.
+    private static func resolvedURL(for rawPath: String, planFolder: URL?) -> URL? {
+        if let url = URL(string: rawPath), url.scheme != nil {
+            return url
+        }
+        return planFolder?.appendingPathComponent(rawPath)
     }
 
     var body: some View {
@@ -1095,7 +1130,7 @@ private struct TaskImagesSection: View {
                     .font(.headline)
                 Spacer()
                 Button(action: { isAddingImage.toggle() }) {
-                    Label("Add Image URL", systemImage: "photo.badge.plus")
+                    Label("Add Image", systemImage: "photo.badge.plus")
                         .font(.caption)
                 }
                 .buttonStyle(.plain)
@@ -1103,8 +1138,45 @@ private struct TaskImagesSection: View {
             }
 
             if isAddingImage {
+                // Drag-and-drop, paste (⌘V), and click-to-browse are all scoped to this
+                // box — they only become active once the user explicitly opens it, so
+                // the rest of the task window never intercepts drops or clipboard pastes.
+                Button(action: browseForImage) {
+                    VStack(spacing: 6) {
+                        Image(systemName: "photo.badge.plus")
+                            .font(.title2)
+                        Text("Click to browse, drag & drop, or paste (⌘V) an image")
+                            .font(.caption)
+                            .multilineTextAlignment(.center)
+                    }
+                    .foregroundColor(.secondary)
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 20)
+                    .background(
+                        RoundedRectangle(cornerRadius: 8)
+                            .fill(isDropTargeted ? Color.accentColor.opacity(0.12) : Color.secondary.opacity(0.06))
+                    )
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 8)
+                            .strokeBorder(
+                                isDropTargeted ? Color.accentColor : Color.secondary.opacity(0.3),
+                                style: StrokeStyle(lineWidth: 1.5, dash: [6])
+                            )
+                    )
+                }
+                .buttonStyle(.plain)
+                .animation(.taskToolQuickFeedback, value: isDropTargeted)
+                .dropDestination(for: URL.self) { urls, _ in
+                    handleImageDrop(urls)
+                } isTargeted: { targeted in
+                    isDropTargeted = targeted
+                }
+                .onPasteCommand(of: [.fileURL, .png, .jpeg, .gif, .tiff, .image]) { providers in
+                    handlePastedImages(providers)
+                }
+
                 HStack {
-                    TextField("https://example.com/image.png", text: $imageURL)
+                    TextField("or paste an image URL: https://example.com/image.png", text: $imageURL)
                         .textFieldStyle(.roundedBorder)
                     Button("Add") {
                         let trimmed = imageURL.trimmingCharacters(in: .whitespaces)
@@ -1126,39 +1198,168 @@ private struct TaskImagesSection: View {
                 ScrollView(.horizontal, showsIndicators: false) {
                     HStack(spacing: 8) {
                         ForEach(imageURLs, id: \.url) { item in
-                            AsyncImage(url: item.url) { phase in
-                                switch phase {
-                                case .success(let img):
-                                    img.resizable()
-                                        .scaledToFill()
-                                        .frame(width: 120, height: 90)
-                                        .clipped()
-                                        .cornerRadius(6)
-                                case .failure:
-                                    VStack(spacing: 4) {
-                                        Image(systemName: "photo.badge.exclamationmark")
-                                            .foregroundColor(.secondary)
-                                        Text(item.alt.isEmpty ? "Image" : item.alt)
-                                            .font(.caption2)
-                                            .foregroundColor(.secondary)
-                                    }
-                                    .frame(width: 120, height: 90)
-                                    .background(Color.secondary.opacity(0.1))
-                                    .cornerRadius(6)
-                                default:
-                                    ProgressView()
-                                        .frame(width: 120, height: 90)
-                                        .background(Color.secondary.opacity(0.1))
-                                        .cornerRadius(6)
-                                }
-                            }
+                            ImageThumbnail(url: item.url, alt: item.alt)
                         }
                     }
                 }
             } else if !isAddingImage {
-                Text("No images — paste a URL to add one")
+                Text("No images — click \"Add Image\" to browse, drop, or paste one")
                     .font(.caption)
                     .foregroundColor(.secondary)
+            }
+        }
+    }
+
+    /// Imports any dropped/pasted/browsed image files into the plan's `attachments`
+    /// folder and appends a markdown image reference for each to the task's notes.
+    /// Returns whether any image was accepted, for use as the drop-destination result.
+    @discardableResult
+    private func handleImageDrop(_ urls: [URL]) -> Bool {
+        let imageURLs = urls.filter { Self.imageFileExtensions.contains($0.pathExtension.lowercased()) }
+        guard !imageURLs.isEmpty else { return false }
+
+        for url in imageURLs {
+            do {
+                let relativePath = try taskStore.importAttachment(from: url, planName: planName)
+                let line = "![\(url.deletingPathExtension().lastPathComponent)](\(relativePath))"
+                bodyText = bodyText.isEmpty ? line : bodyText + "\n" + line
+            } catch {
+                onError("Failed to attach image: \(error.localizedDescription)")
+            }
+        }
+        onChanged()
+        isAddingImage = false
+        return true
+    }
+
+    /// Handles ⌘V while the drop-zone box is open: image files copied in Finder come
+    /// through as a file URL (imported like a drop); images copied from a browser,
+    /// Preview, or a screenshot come through as raw image data with no source file, so
+    /// they're written directly into the plan's attachments folder under a generated name.
+    private func handlePastedImages(_ providers: [NSItemProvider]) {
+        for provider in providers {
+            if provider.hasItemConformingToTypeIdentifier(UTType.fileURL.identifier) {
+                _ = provider.loadObject(ofClass: URL.self) { url, _ in
+                    guard let url else { return }
+                    DispatchQueue.main.async { handleImageDrop([url]) }
+                }
+                continue
+            }
+
+            guard let match = Self.pasteImageTypes.first(where: { provider.hasItemConformingToTypeIdentifier($0.type.identifier) }) else {
+                continue
+            }
+            provider.loadDataRepresentation(forTypeIdentifier: match.type.identifier) { data, _ in
+                guard let data else { return }
+                DispatchQueue.main.async { importPastedImageData(data, fileExtension: match.ext) }
+            }
+        }
+    }
+
+    private func importPastedImageData(_ data: Data, fileExtension: String) {
+        let fileName = "pasted-image-\(UUID().uuidString.prefix(8)).\(fileExtension)"
+        do {
+            let relativePath = try taskStore.importAttachment(data: data, suggestedFileName: fileName, planName: planName)
+            let line = "![Pasted image](\(relativePath))"
+            bodyText = bodyText.isEmpty ? line : bodyText + "\n" + line
+            onChanged()
+            isAddingImage = false
+        } catch {
+            onError("Failed to attach image: \(error.localizedDescription)")
+        }
+    }
+
+    /// Opens a standard file picker scoped to image files, for explicitly selecting an
+    /// attachment from the filesystem instead of dragging or pasting one.
+    private func browseForImage() {
+        let panel = NSOpenPanel()
+        panel.allowedContentTypes = [.image]
+        panel.allowsMultipleSelection = true
+        panel.canChooseDirectories = false
+        panel.canChooseFiles = true
+        panel.message = "Choose an image to attach to this task"
+        panel.prompt = "Attach"
+
+        if panel.runModal() == .OK {
+            handleImageDrop(panel.urls)
+        }
+    }
+}
+
+/// Renders a single image thumbnail. Remote URLs load via `AsyncImage` (backed by
+/// `URLSession`); local attachment files use `NSImage(contentsOf:)` directly, since
+/// `URLSession` — and therefore `AsyncImage` — doesn't support the `file://` scheme.
+private struct ImageThumbnail: View {
+    let url: URL
+    let alt: String
+    @State private var localImage: NSImage?
+    @State private var localLoadFailed = false
+
+    var body: some View {
+        Group {
+            if url.isFileURL {
+                if let localImage {
+                    Image(nsImage: localImage)
+                        .resizable()
+                        .scaledToFill()
+                        .frame(width: 120, height: 90)
+                        .clipped()
+                        .cornerRadius(6)
+                } else if localLoadFailed {
+                    failurePlaceholder
+                } else {
+                    ProgressView()
+                        .frame(width: 120, height: 90)
+                        .background(Color.secondary.opacity(0.1))
+                        .cornerRadius(6)
+                        .task { loadLocalImage() }
+                }
+            } else {
+                AsyncImage(url: url) { phase in
+                    switch phase {
+                    case .success(let img):
+                        img.resizable()
+                            .scaledToFill()
+                            .frame(width: 120, height: 90)
+                            .clipped()
+                            .cornerRadius(6)
+                    case .failure:
+                        failurePlaceholder
+                    default:
+                        ProgressView()
+                            .frame(width: 120, height: 90)
+                            .background(Color.secondary.opacity(0.1))
+                            .cornerRadius(6)
+                    }
+                }
+            }
+        }
+    }
+
+    private var failurePlaceholder: some View {
+        VStack(spacing: 4) {
+            Image(systemName: "photo.badge.exclamationmark")
+                .foregroundColor(.secondary)
+            Text(alt.isEmpty ? "Image" : alt)
+                .font(.caption2)
+                .foregroundColor(.secondary)
+        }
+        .frame(width: 120, height: 90)
+        .background(Color.secondary.opacity(0.1))
+        .cornerRadius(6)
+    }
+
+    private func loadLocalImage() {
+        // Loading from disk is cheap enough for thumbnail-sized images that a background
+        // hop isn't required, but dispatching keeps the main thread free during the read.
+        DispatchQueue.global(qos: .userInitiated).async {
+            let image = NSImage(contentsOf: url)
+            DispatchQueue.main.async {
+                if let image {
+                    localImage = image
+                } else {
+                    localLoadFailed = true
+                }
             }
         }
     }
@@ -1186,6 +1387,11 @@ struct TaskDetailView: View {
 
     var plan: Plan? {
         taskStore.plans.first(where: { $0.name == editedTask.plan })
+    }
+
+    /// The plan's on-disk folder, used to resolve/import image attachments.
+    var planFolder: URL? {
+        taskStore.storageURL?.appendingPathComponent(editedTask.plan)
     }
 
     init(task: Task) {
@@ -1296,7 +1502,16 @@ struct TaskDetailView: View {
                     }
 
                     // Images
-                    TaskImagesSection(bodyText: $bodyNotes, onChanged: rebuildBody)
+                    TaskImagesSection(
+                        bodyText: $bodyNotes,
+                        planFolder: planFolder,
+                        planName: editedTask.plan,
+                        onChanged: rebuildBody,
+                        onError: { message in
+                            errorMessage = message
+                            showError = true
+                        }
+                    )
 
                     // Tags
                     VStack(alignment: .leading, spacing: 8) {
@@ -1350,7 +1565,10 @@ struct TaskDetailView: View {
                             }
                         
                         if hasDueDate {
-                            DatePicker("Date", selection: Binding($editedTask.dueDate, default: Date()), displayedComponents: .date)
+                            HStack {
+                                DatePicker("Date", selection: Binding($editedTask.dueDate, default: Date()), displayedComponents: .date)
+                                Spacer()
+                            }
                         }
                     }
                     

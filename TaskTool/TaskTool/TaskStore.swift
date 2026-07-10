@@ -573,6 +573,67 @@ class TaskStore: ObservableObject {
         tasks.removeAll { $0.id == task.id }
     }
     
+    /// Copies a dropped file (e.g. an image dragged onto an open task) into the plan's
+    /// shared `attachments` folder, so it can be referenced from any task in that plan via
+    /// a stable relative path. Returns the relative path (e.g. "attachments/photo.png") to
+    /// embed as `![](relativePath)` in the task's markdown body.
+    /// If a file with the same name already exists, the first 8 chars of a fresh UUID are
+    /// appended so the new file never overwrites or collides with an unrelated one.
+    func importAttachment(from sourceURL: URL, planName: String) throws -> String {
+        let (_, destinationFile) = try attachmentDestination(forFileNamed: sourceURL.lastPathComponent, planName: planName)
+
+        // Dropped file URLs from another process (e.g. Finder) may be security-scoped;
+        // this is a no-op (returns false) for plain local URLs, so it's safe either way.
+        let didAccess = sourceURL.startAccessingSecurityScopedResource()
+        defer { if didAccess { sourceURL.stopAccessingSecurityScopedResource() } }
+
+        markSaving()
+        try fileManager.copyItem(at: sourceURL, to: destinationFile)
+
+        return "attachments/\(destinationFile.lastPathComponent)"
+    }
+
+    /// Writes raw image data (e.g. pasted from the clipboard, which has no source file)
+    /// into the plan's shared `attachments` folder under `suggestedFileName`. Returns the
+    /// relative path to embed as `![](relativePath)` in the task's markdown body.
+    func importAttachment(data: Data, suggestedFileName: String, planName: String) throws -> String {
+        let (_, destinationFile) = try attachmentDestination(forFileNamed: suggestedFileName, planName: planName)
+
+        markSaving()
+        try data.write(to: destinationFile, options: .atomic)
+
+        return "attachments/\(destinationFile.lastPathComponent)"
+    }
+
+    /// Resolves (and creates if needed) the plan's `attachments` folder, and computes a
+    /// collision-free destination file URL for `fileName` within it.
+    private func attachmentDestination(forFileNamed fileName: String, planName: String) throws -> (folder: URL, file: URL) {
+        guard let storageURL = storageURL else {
+            throw NSError(domain: "TaskStore", code: 2, userInfo: [NSLocalizedDescriptionKey: "No storage location set"])
+        }
+        let planFolder = storageURL.appendingPathComponent(planName)
+        guard fileManager.fileExists(atPath: planFolder.path) else {
+            throw NSError(domain: "TaskStore", code: 3, userInfo: [NSLocalizedDescriptionKey: "Plan folder '\(planName)' does not exist"])
+        }
+
+        let attachmentsFolder = planFolder.appendingPathComponent("attachments")
+        if !fileManager.fileExists(atPath: attachmentsFolder.path) {
+            try fileManager.createDirectory(at: attachmentsFolder, withIntermediateDirectories: true)
+        }
+
+        var destinationFile = attachmentsFolder.appendingPathComponent(fileName)
+        if fileManager.fileExists(atPath: destinationFile.path) {
+            let base = (fileName as NSString).deletingPathExtension
+            let ext = (fileName as NSString).pathExtension
+            let uniqueName = ext.isEmpty
+                ? "\(base)-\(UUID().uuidString.prefix(8))"
+                : "\(base)-\(UUID().uuidString.prefix(8)).\(ext)"
+            destinationFile = attachmentsFolder.appendingPathComponent(uniqueName)
+        }
+
+        return (attachmentsFolder, destinationFile)
+    }
+    
     func archiveDoneTasks(for plan: Plan, tasks doneTasks: [Task]) throws {
         guard let storageURL = storageURL else { return }
         
