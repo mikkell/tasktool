@@ -454,16 +454,6 @@ Plan names must be unique (case-insensitive). The app prevents duplicates when c
 ### YAML special characters
 Values containing `:`, `#`, `"`, or leading/trailing spaces are automatically quoted by the serialiser. You do not need to quote them manually when editing files in a text editor.
 
-## 🗺 Roadmap
-
-- [ ] Search and filter tasks across all plans
-- [ ] Task dependencies
-- [ ] Recurring tasks
-- [ ] Export (JSON, CSV, Markdown summary)
-- [ ] Custom task templates
-- [ ] Statistics and insights dashboard
-- [ ] iOS companion app
-
 ## 🤝 Contributing
 
 1. Fork the repository
