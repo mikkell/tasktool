@@ -15,6 +15,9 @@ struct SettingsView: View {
             ShortcutsSettingsTab()
                 .tabItem { Label("Shortcuts", systemImage: "keyboard") }
 
+            TagsSettingsTab()
+                .tabItem { Label("Tags", systemImage: "tag") }
+
             CLISettingsTab()
                 .tabItem { Label("CLI", systemImage: "terminal") }
         }
@@ -123,6 +126,133 @@ struct ShortcutsSettingsTab: View {
         .formStyle(.grouped)
         .padding()
         .frame(minHeight: 260)
+    }
+}
+
+// MARK: - Tags
+
+struct TagsSettingsTab: View {
+    @EnvironmentObject var taskStore: TaskStore
+    @State private var newTagName = ""
+    @State private var renamingTag: String?
+    @State private var renameText = ""
+    @State private var tagPendingDeletion: String?
+    @State private var errorMessage = ""
+    @State private var showError = false
+
+    private var sortedTags: [String] {
+        taskStore.settings.availableTags.sorted { $0.localizedCaseInsensitiveCompare($1) == .orderedAscending }
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Tags added to tasks are saved here automatically so they can be reused. Rename or delete a tag to update it everywhere it's used.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+
+            HStack {
+                TextField("New tag", text: $newTagName)
+                    .textFieldStyle(.roundedBorder)
+                    .onSubmit { addTag() }
+                Button("Add", action: addTag)
+                    .disabled(newTagName.trimmingCharacters(in: .whitespaces).isEmpty)
+            }
+
+            if sortedTags.isEmpty {
+                Text("No tags yet.")
+                    .foregroundStyle(.secondary)
+                    .font(.caption)
+                    .padding(.top, 8)
+            } else {
+                List {
+                    ForEach(sortedTags, id: \.self) { tag in
+                        HStack {
+                            if renamingTag == tag {
+                                TextField("", text: $renameText)
+                                    .textFieldStyle(.roundedBorder)
+                                    .onSubmit { commitRename(tag) }
+                                Button("Save") { commitRename(tag) }
+                                Button("Cancel") { renamingTag = nil }
+                            } else {
+                                Text(tag)
+                                Spacer()
+                                Button {
+                                    renamingTag = tag
+                                    renameText = tag
+                                } label: {
+                                    Image(systemName: "pencil")
+                                }
+                                .buttonStyle(.plain)
+                                Button {
+                                    tagPendingDeletion = tag
+                                } label: {
+                                    Image(systemName: "trash")
+                                        .foregroundStyle(.red)
+                                }
+                                .buttonStyle(.plain)
+                            }
+                        }
+                    }
+                }
+                .frame(minHeight: 140)
+            }
+
+            if showError {
+                Text(errorMessage)
+                    .foregroundStyle(.red)
+                    .font(.caption)
+            }
+        }
+        .padding()
+        .frame(minHeight: 260)
+        .alert("Delete tag?", isPresented: Binding(
+            get: { tagPendingDeletion != nil },
+            set: { if !$0 { tagPendingDeletion = nil } }
+        )) {
+            Button("Cancel", role: .cancel) { tagPendingDeletion = nil }
+            Button("Delete", role: .destructive) {
+                if let tag = tagPendingDeletion {
+                    deleteTag(tag)
+                }
+                tagPendingDeletion = nil
+            }
+        } message: {
+            Text("This removes \"\(tagPendingDeletion ?? "")\" from the global list and from every task that uses it.")
+        }
+    }
+
+    private func addTag() {
+        let trimmed = newTagName.trimmingCharacters(in: .whitespaces)
+        guard !trimmed.isEmpty else { return }
+        do {
+            try taskStore.registerTags([trimmed])
+            newTagName = ""
+        } catch {
+            errorMessage = "Failed to add tag: \(error.localizedDescription)"
+            showError = true
+        }
+    }
+
+    private func commitRename(_ tag: String) {
+        let trimmed = renameText.trimmingCharacters(in: .whitespaces)
+        guard !trimmed.isEmpty else { return }
+        do {
+            try taskStore.renameGlobalTag(from: tag, to: trimmed)
+            renamingTag = nil
+        } catch {
+            errorMessage = "Failed to rename tag: \(error.localizedDescription)"
+            showError = true
+        }
+    }
+
+    private func deleteTag(_ tag: String) {
+        do {
+            try taskStore.deleteGlobalTag(tag)
+        } catch {
+            errorMessage = "Failed to delete tag: \(error.localizedDescription)"
+            showError = true
+        }
     }
 }
 

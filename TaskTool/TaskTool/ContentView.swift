@@ -35,6 +35,140 @@ extension Animation {
     static let taskToolReflow = Animation.spring(response: 0.32, dampingFraction: 0.78)
 }
 
+/// Markdown text-formatting helpers shared by every plain-text `TextEditor` (task
+/// description/notes fields) so Bold/Italic/Strikethrough keyboard shortcuts behave
+/// consistently everywhere.
+enum MarkdownFormatting {
+    /// Wraps the current selection with `prefix`/`suffix` (e.g. `**` for bold), or — if
+    /// nothing is selected — inserts the markers at the cursor so the user can type straight
+    /// into them. Handles macOS's multi-range (discontiguous) text selection by wrapping each
+    /// selected range independently, then leaves the wrapped (inner) text selected so the same
+    /// shortcut can be pressed again right away.
+    ///
+    /// If the selection is already formatted — either because the markers sit immediately
+    /// outside it (e.g. cursor inside `**bold**`) or because the selection itself includes
+    /// them (e.g. `**bold**` fully selected) — pressing the same shortcut again removes the
+    /// markers instead of adding another layer, so the shortcut acts as a toggle.
+    static func wrapSelection(
+        in text: inout String,
+        selection: inout TextSelection?,
+        prefix: String,
+        suffix: String
+    ) {
+        let ranges: [Range<String.Index>]
+        if let indices = selection?.indices {
+            switch indices {
+            case .selection(let range):
+                ranges = [range]
+            case .multiSelection(let rangeSet):
+                ranges = Array(rangeSet.ranges)
+            @unknown default:
+                ranges = [text.endIndex..<text.endIndex]
+            }
+        } else {
+            ranges = [text.endIndex..<text.endIndex]
+        }
+        guard !ranges.isEmpty else { return }
+
+        enum Action { case add, remove }
+
+        // Precompute the exact span each edit will replace (which, when unwrapping markers
+        // that sit just outside the selection, extends beyond the original selected range)
+        // along with the replacement text and whether it's adding or removing formatting.
+        var edits: [(editRange: Range<String.Index>, replacement: String, action: Action)] = []
+
+        for range in ranges.sorted(by: { $0.lowerBound < $1.lowerBound }) {
+            let selectedText = String(text[range])
+
+            let outerStart = text.index(range.lowerBound, offsetBy: -prefix.count, limitedBy: text.startIndex)
+            let outerEnd = text.index(range.upperBound, offsetBy: suffix.count, limitedBy: text.endIndex)
+            let hasOuterMarkers = !prefix.isEmpty && !suffix.isEmpty
+                && outerStart != nil && outerEnd != nil
+                && text[outerStart!..<range.lowerBound] == prefix
+                && text[range.upperBound..<outerEnd!] == suffix
+
+            let hasInnerMarkers = !selectedText.isEmpty
+                && selectedText.count >= prefix.count + suffix.count
+                && selectedText.hasPrefix(prefix)
+                && selectedText.hasSuffix(suffix)
+
+            if hasOuterMarkers, let outerStart, let outerEnd {
+                edits.append((outerStart..<outerEnd, selectedText, .remove))
+            } else if hasInnerMarkers {
+                let innerText = String(selectedText.dropFirst(prefix.count).dropLast(suffix.count))
+                edits.append((range, innerText, .remove))
+            } else {
+                edits.append((range, prefix + selectedText + suffix, .add))
+            }
+        }
+
+        // Build the new string in one left-to-right pass instead of mutating `text` in place —
+        // this avoids invalidating the `String.Index` values of ranges we haven't processed yet.
+        var result = ""
+        var lastEnd = text.startIndex
+        var wrappedRanges: [Range<String.Index>] = []
+
+        for edit in edits {
+            result += text[lastEnd..<edit.editRange.lowerBound]
+            let insertStart = result.endIndex
+            result += edit.replacement
+            let insertEnd = result.endIndex
+
+            switch edit.action {
+            case .add:
+                // Keep only the wrapped (inner) text selected, not the markers, so the same
+                // shortcut can be pressed again right away to toggle formatting off.
+                let contentStart = result.index(insertStart, offsetBy: prefix.count)
+                let contentEnd = result.index(insertEnd, offsetBy: -suffix.count)
+                wrappedRanges.append(contentStart..<contentEnd)
+            case .remove:
+                wrappedRanges.append(insertStart..<insertEnd)
+            }
+
+            lastEnd = edit.editRange.upperBound
+        }
+        result += text[lastEnd...]
+
+        text = result
+
+        if wrappedRanges.count == 1, let only = wrappedRanges.first {
+            selection = TextSelection(range: only)
+        } else {
+            selection = TextSelection(ranges: RangeSet(wrappedRanges))
+        }
+    }
+}
+
+/// Hidden buttons wiring ⌘B / ⌘I / ⌘⇧X to Bold/Italic/Strikethrough Markdown formatting for a
+/// given `TextEditor`. Gated on `isActive` (typically that editor's own `@FocusState`) so the
+/// shortcuts don't hijack other fields — e.g. a Title `TextField` in the same sheet.
+private struct MarkdownFormattingShortcuts: View {
+    @Binding var text: String
+    @Binding var selection: TextSelection?
+    let isActive: Bool
+
+    var body: some View {
+        Group {
+            Button("") {
+                MarkdownFormatting.wrapSelection(in: &text, selection: &selection, prefix: "**", suffix: "**")
+            }
+            .keyboardShortcut("b", modifiers: .command)
+
+            Button("") {
+                MarkdownFormatting.wrapSelection(in: &text, selection: &selection, prefix: "*", suffix: "*")
+            }
+            .keyboardShortcut("i", modifiers: .command)
+
+            Button("") {
+                MarkdownFormatting.wrapSelection(in: &text, selection: &selection, prefix: "~~", suffix: "~~")
+            }
+            .keyboardShortcut("x", modifiers: [.command, .shift])
+        }
+        .disabled(!isActive)
+        .hidden()
+    }
+}
+
 /// Standardized Cancel / primary-action button pair used at the bottom of every
 /// creation and edit sheet in the app. Always trailing-aligned (macOS HIG convention),
 /// with the primary action styled as a prominent blue button so the confirming action
@@ -61,6 +195,30 @@ private struct DialogFooterButtons: View {
                 .disabled(confirmDisabled)
         }
         .frame(maxWidth: .infinity)
+    }
+}
+
+/// A transient "Undo" toast shown after deleting a plan or task, anchored to a corner of
+/// the window (see `ContentView`'s `.overlay`). Auto-dismisses after a few seconds via
+/// `TaskStore.pendingUndo`'s own timer; this view just renders whatever is currently pending.
+private struct UndoToastView: View {
+    let message: String
+    let onUndo: () -> Void
+
+    var body: some View {
+        HStack(spacing: 12) {
+            Text(message)
+                .lineLimit(1)
+
+            Button("Undo", action: onUndo)
+                .buttonStyle(.borderedProminent)
+                .tint(.blue)
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 10)
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 10))
+        .overlay(RoundedRectangle(cornerRadius: 10).stroke(Color.primary.opacity(0.08)))
+        .shadow(radius: 8, y: 2)
     }
 }
 
@@ -203,7 +361,7 @@ struct ContentView: View {
                 Button("Delete", role: .destructive) {
                     if let plan = planToDelete {
                         do {
-                            try taskStore.deletePlan(plan)
+                            try taskStore.deletePlanWithUndo(plan)
                             if selectedPlan?.id == plan.id {
                                 selectedPlan = nil
                             }
@@ -223,6 +381,20 @@ struct ContentView: View {
                 Button("OK", role: .cancel) {}
             } message: {
                 Text(deleteErrorMessage)
+            }
+            .overlay(alignment: .bottomTrailing) {
+                if let pendingUndo = taskStore.pendingUndo {
+                    UndoToastView(
+                        message: pendingUndo.message,
+                        onUndo: {
+                            pendingUndo.undo()
+                            taskStore.dismissPendingUndo()
+                        }
+                    )
+                    .padding()
+                    .transition(.move(edge: .bottom).combined(with: .opacity))
+                    .animation(.easeInOut(duration: 0.2), value: taskStore.pendingUndo?.id)
+                }
             }
         }
     }
@@ -349,6 +521,8 @@ struct PlanDetailView: View {
     @State private var showingArchiveConfirmation = false
     @State private var searchText = ""
     @FocusState private var isSearchFieldFocused: Bool
+    @State private var selectedTaskIDs: Set<UUID> = []
+    @State private var showingBulkDeleteConfirm = false
     
     var plan: Plan? {
         taskStore.plans.first(where: { $0.id == planId })
@@ -388,40 +562,66 @@ struct PlanDetailView: View {
         return planTasks.filter { $0.status == doneStatus }
     }
     
+    var selectedTasksList: [Task] {
+        planTasks.filter { selectedTaskIDs.contains($0.id) }
+    }
+    
+    var otherPlansForSelection: [Plan] {
+        guard let plan = plan else { return [] }
+        return taskStore.plans.filter { $0.id != plan.id }
+    }
+    
     var body: some View {
         if let plan = plan {
-            GeometryReader { geo in
-                let columnCount = plan.statuses.count
-                let spacing: CGFloat = 20
-                let paddingTotal: CGFloat = 40  // .padding() = 20pt per side
-                let minColWidth: CGFloat = 280
-                let evenWidth = (geo.size.width - paddingTotal - spacing * CGFloat(max(columnCount - 1, 0))) / CGFloat(max(columnCount, 1))
-                let colWidth = max(minColWidth, evenWidth)
+            // `.searchable`/`.searchFocused`/`.toolbar`/`.sheet` are attached to this stable
+            // VStack wrapper rather than directly to the GeometryReader below. Chaining them
+            // onto a GeometryReader-rooted view is fragile: GeometryReader recomputes its
+            // content (and thus re-evaluates those modifiers) on every geometry pass, which is
+            // exactly what happens while the search field animates in/out or its text changes
+            // — this could intermittently crash or drop the search UI when the field is
+            // dismissed or cleared.
+            VStack(spacing: 0) {
+                GeometryReader { geo in
+                    let columnCount = plan.statuses.count
+                    let spacing: CGFloat = 20
+                    let paddingTotal: CGFloat = 40  // .padding() = 20pt per side
+                    let minColWidth: CGFloat = 280
+                    let evenWidth = (geo.size.width - paddingTotal - spacing * CGFloat(max(columnCount - 1, 0))) / CGFloat(max(columnCount, 1))
+                    let colWidth = max(minColWidth, evenWidth)
 
-                // Group once per render instead of re-filtering the full task list for every column.
-                let groupedTasks = tasksGroupedByStatus
+                    // Group once per render instead of re-filtering the full task list for every column.
+                    let groupedTasks = tasksGroupedByStatus
 
-                ScrollView(.horizontal, showsIndicators: false) {
-                    HStack(spacing: spacing) {
-                        ForEach(plan.statuses.sorted(by: { $0.order < $1.order })) { status in
-                            KanbanColumn(
-                                title: status.name,
-                                tasks: groupedTasks[status.name] ?? [],
-                                color: Color.from(string: status.color),
-                                statusName: status.name,
-                                isDoneColumn: status.isDoneStatus,
-                                plan: plan
-                            )
-                            .frame(width: colWidth)
+                    ScrollView(.horizontal, showsIndicators: false) {
+                        HStack(spacing: spacing) {
+                            ForEach(plan.statuses.sorted(by: { $0.order < $1.order })) { status in
+                                KanbanColumn(
+                                    title: status.name,
+                                    tasks: groupedTasks[status.name] ?? [],
+                                    color: Color.from(string: status.color),
+                                    statusName: status.name,
+                                    isDoneColumn: status.isDoneStatus,
+                                    plan: plan,
+                                    selectedTaskIDs: $selectedTaskIDs
+                                )
+                                .frame(width: colWidth)
+                            }
                         }
+                        // Note: no `.animation(value:)` here — each KanbanColumn already
+                        // animates its own `tasks` array. Adding a second implicit animation at
+                        // this level for the same underlying (search-driven) change caused two
+                        // overlapping animated insert/remove passes across every column at once,
+                        // which combined with a GeometryReader recomputing layout mid-animation
+                        // was the likely source of intermittent crashes when clearing search.
+                        .padding()
+                        .frame(minWidth: geo.size.width)
                     }
-                    // Scoped to this plan's (filtered) tasks only — Task is Equatable, so this
-                    // compares values directly instead of allocating a joined string every render.
-                    .animation(.taskToolReflow, value: filteredPlanTasks)
-                    .padding()
-                    .frame(minWidth: geo.size.width)
                 }
             }
+            // Forces SwiftUI to treat this as a fresh view instance whenever the selected plan
+            // changes, resetting `@State` (search text, multi-select) instead of carrying stale
+            // selection/search state over from a previously-viewed plan.
+            .id(plan.id)
             .navigationTitle(plan.name)
             .searchable(text: $searchText, placement: .toolbar, prompt: "Search tasks…")
             .searchFocused($isSearchFieldFocused)
@@ -434,6 +634,45 @@ struct PlanDetailView: View {
                     .hidden()
             )
             .toolbar {
+                // Bulk-selection actions replace nothing and add no extra row — they live in
+                // the same fixed-height toolbar line as the other actions so selecting tasks
+                // never pushes the Kanban columns down.
+                if !selectedTaskIDs.isEmpty {
+                    ToolbarItem(placement: .automatic) {
+                        Text("\(selectedTaskIDs.count) selected")
+                            .foregroundColor(.secondary)
+                            .background(.clear)
+                    }
+                    ToolbarItem(placement: .automatic) {
+                        Menu {
+                            ForEach(plan.statuses.sorted(by: { $0.order < $1.order })) { status in
+                                Button(status.name) { moveSelectedTasks(toStatus: status.name) }
+                            }
+                        } label: {
+                            Label("Move to Status", systemImage: "arrow.right.square")
+                        }
+                    }
+                    ToolbarItem(placement: .automatic) {
+                        Menu {
+                            ForEach(otherPlansForSelection) { targetPlan in
+                                Button(targetPlan.name) { moveSelectedTasks(toPlan: targetPlan) }
+                            }
+                        } label: {
+                            Label("Move to Plan", systemImage: "folder")
+                        }
+                        .disabled(otherPlansForSelection.isEmpty)
+                    }
+                    ToolbarItem(placement: .automatic) {
+                        Button(role: .destructive, action: { showingBulkDeleteConfirm = true }) {
+                            Label("Delete", systemImage: "trash")
+                        }
+                    }
+                    ToolbarItem(placement: .automatic) {
+                        Button(action: { selectedTaskIDs.removeAll() }) {
+                            Label("Clear Selection", systemImage: "xmark.circle")
+                        }
+                    }
+                }
                 ToolbarItem(placement: .primaryAction) {
                     Button(action: { showingNewTask = true }) {
                         Label("New Task", systemImage: "plus")
@@ -466,6 +705,14 @@ struct PlanDetailView: View {
             } message: {
                 Text("Archive \(doneTasks.count) completed task\(doneTasks.count == 1 ? "" : "s")? They will be moved to an 'Archived' folder.")
             }
+            .alert("Delete \(selectedTaskIDs.count) Task\(selectedTaskIDs.count == 1 ? "" : "s")?", isPresented: $showingBulkDeleteConfirm) {
+                Button("Cancel", role: .cancel) {}
+                Button("Delete", role: .destructive) {
+                    bulkDeleteSelectedTasks()
+                }
+            } message: {
+                Text("You can undo this immediately after.")
+            }
         } else {
             Text("Plan not found")
                 .foregroundColor(.secondary)
@@ -481,6 +728,36 @@ struct PlanDetailView: View {
             debugLog("❌ Failed to archive tasks: \(error.localizedDescription)")
         }
     }
+    
+    private func moveSelectedTasks(toPlan targetPlan: Plan) {
+        let tasksToMove = selectedTasksList
+        selectedTaskIDs.removeAll()
+        do {
+            try taskStore.moveTasks(tasksToMove, toPlan: targetPlan)
+        } catch {
+            debugLog("❌ Failed to move tasks to plan '\(targetPlan.name)': \(error.localizedDescription)")
+        }
+    }
+    
+    private func moveSelectedTasks(toStatus statusName: String) {
+        let tasksToMove = selectedTasksList
+        selectedTaskIDs.removeAll()
+        do {
+            try taskStore.moveTasks(tasksToMove, toStatus: statusName)
+        } catch {
+            debugLog("❌ Failed to move tasks to status '\(statusName)': \(error.localizedDescription)")
+        }
+    }
+    
+    private func bulkDeleteSelectedTasks() {
+        let tasksToDelete = selectedTasksList
+        selectedTaskIDs.removeAll()
+        do {
+            try taskStore.deleteTasksWithUndo(tasksToDelete)
+        } catch {
+            debugLog("❌ Failed to delete tasks: \(error.localizedDescription)")
+        }
+    }
 }
 
 struct KanbanColumn: View {
@@ -490,6 +767,7 @@ struct KanbanColumn: View {
     let statusName: String
     let isDoneColumn: Bool
     let plan: Plan
+    @Binding var selectedTaskIDs: Set<UUID>
     @State private var selectedTask: Task?
     @State private var isTargeted = false
     @State private var showingNewTask = false
@@ -535,7 +813,19 @@ struct KanbanColumn: View {
             ScrollView {
                 VStack(spacing: 8) {
                     ForEach(tasks) { task in
-                        TaskCard(task: task, isDone: isDoneColumn)
+                        TaskCard(
+                            task: task,
+                            isDone: isDoneColumn,
+                            isSelected: selectedTaskIDs.contains(task.id),
+                            hasActiveSelection: !selectedTaskIDs.isEmpty,
+                            onToggleSelect: {
+                                if selectedTaskIDs.contains(task.id) {
+                                    selectedTaskIDs.remove(task.id)
+                                } else {
+                                    selectedTaskIDs.insert(task.id)
+                                }
+                            }
+                        )
                             .transition(.asymmetric(
                                 insertion: .move(edge: .top).combined(with: .opacity),
                                 removal: .move(edge: .bottom).combined(with: .opacity)
@@ -610,6 +900,9 @@ struct KanbanColumn: View {
 struct TaskCard: View {
     let task: Task
     var isDone: Bool = false
+    var isSelected: Bool = false
+    var hasActiveSelection: Bool = false
+    var onToggleSelect: (() -> Void)? = nil
     @State private var isHovered = false
 
     private enum DueUrgency { case overdue, today, tomorrow, upcoming }
@@ -659,13 +952,28 @@ struct TaskCard: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text("#\(task.id.uuidString.prefix(8))")
-                .font(.system(.caption2, design: .monospaced))
-                .foregroundColor(.secondary)
-                .padding(.horizontal, 6)
-                .padding(.vertical, 2)
-                .background(Color.secondary.opacity(0.15))
-                .cornerRadius(4)
+            HStack(alignment: .top) {
+                Text("#\(task.id.uuidString.prefix(8))")
+                    .font(.system(.caption2, design: .monospaced))
+                    .foregroundColor(.secondary)
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 2)
+                    .background(Color.secondary.opacity(0.15))
+                    .cornerRadius(4)
+
+                Spacer()
+
+                if isSelected || hasActiveSelection || isHovered {
+                    Button(action: { onToggleSelect?() }) {
+                        Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
+                            .font(.system(size: 18))
+                            .foregroundColor(isSelected ? Color.accentColor : Color.secondary.opacity(0.6))
+                    }
+                    .buttonStyle(.plain)
+                    .transition(.opacity)
+                    .help(isSelected ? "Deselect task" : "Select task")
+                }
+            }
 
             Text(task.title)
                 .font(.headline)
@@ -706,7 +1014,7 @@ struct TaskCard: View {
         .cornerRadius(6)
         .overlay(
             RoundedRectangle(cornerRadius: 6)
-                .stroke(Color.primary.opacity(0.12), lineWidth: 1)
+                .stroke(isSelected ? Color.accentColor : Color.primary.opacity(0.12), lineWidth: isSelected ? 2 : 1)
         )
         .contentShape(Rectangle())
         .shadow(color: Color.black.opacity(isHovered ? 0.12 : 0.04), radius: isHovered ? 6 : 2, y: isHovered ? 3 : 1)
@@ -783,8 +1091,8 @@ struct NewTaskView: View {
     @EnvironmentObject var taskStore: TaskStore
     @State private var title = ""
     @State private var taskBody = ""
+    @State private var taskBodySelection: TextSelection?
     @State private var tags: [String] = []
-    @State private var tagInput = ""
     @State private var dueDate: Date?
     @State private var hasDueDate = false
     @State private var showError = false
@@ -810,7 +1118,7 @@ struct NewTaskView: View {
                         .gridColumnAlignment(.trailing)
                         .foregroundStyle(.secondary)
                         .padding(.top, 3)
-                    TextEditor(text: $taskBody)
+                    TextEditor(text: $taskBody, selection: $taskBodySelection)
                         .frame(height: 100)
                         .focused($descriptionFocused)
                         .overlay(
@@ -818,43 +1126,16 @@ struct NewTaskView: View {
                                 .stroke(descriptionFocused ? Color.accentColor : Color.gray.opacity(0.5),
                                         lineWidth: descriptionFocused ? 2 : 1)
                         )
+                        .background(
+                            MarkdownFormattingShortcuts(text: $taskBody, selection: $taskBodySelection, isActive: descriptionFocused)
+                        )
                 }
 
                 GridRow(alignment: .firstTextBaseline) {
                     Text("Tags")
                         .gridColumnAlignment(.trailing)
                         .foregroundStyle(.secondary)
-                    VStack(alignment: .leading, spacing: 8) {
-                        HStack {
-                            TextField("", text: $tagInput)
-                                .textFieldStyle(.roundedBorder)
-                            Button("Add") {
-                                let trimmed = tagInput.trimmingCharacters(in: .whitespaces)
-                                if !trimmed.isEmpty && !tags.contains(trimmed) {
-                                    tags.append(trimmed)
-                                    tagInput = ""
-                                }
-                            }
-                        }
-                        if !tags.isEmpty {
-                            HStack {
-                                ForEach(tags, id: \.self) { tag in
-                                    HStack {
-                                        Text(tag)
-                                        Button(action: { tags.removeAll { $0 == tag } }) {
-                                            Image(systemName: "xmark.circle.fill")
-                                                .foregroundColor(.secondary)
-                                        }
-                                        .buttonStyle(.plain)
-                                    }
-                                    .padding(.horizontal, 8)
-                                    .padding(.vertical, 4)
-                                    .background(Color.accentColor.opacity(0.2))
-                                    .cornerRadius(4)
-                                }
-                            }
-                        }
-                    }
+                    TagInputView(tags: $tags)
                 }
 
                 GridRow(alignment: .firstTextBaseline) {
@@ -925,8 +1206,8 @@ struct NewTaskViewForStatus: View {
     @EnvironmentObject var taskStore: TaskStore
     @State private var title = ""
     @State private var taskBody = ""
+    @State private var taskBodySelection: TextSelection?
     @State private var tags: [String] = []
-    @State private var tagInput = ""
     @State private var dueDate: Date?
     @State private var hasDueDate = false
     @State private var showError = false
@@ -953,7 +1234,7 @@ struct NewTaskViewForStatus: View {
                         .gridColumnAlignment(.trailing)
                         .foregroundStyle(.secondary)
                         .padding(.top, 3)
-                    TextEditor(text: $taskBody)
+                    TextEditor(text: $taskBody, selection: $taskBodySelection)
                         .frame(height: 100)
                         .focused($descriptionFocused)
                         .overlay(
@@ -961,43 +1242,16 @@ struct NewTaskViewForStatus: View {
                                 .stroke(descriptionFocused ? Color.accentColor : Color.gray.opacity(0.5),
                                         lineWidth: descriptionFocused ? 2 : 1)
                         )
+                        .background(
+                            MarkdownFormattingShortcuts(text: $taskBody, selection: $taskBodySelection, isActive: descriptionFocused)
+                        )
                 }
 
                 GridRow(alignment: .firstTextBaseline) {
                     Text("Tags")
                         .gridColumnAlignment(.trailing)
                         .foregroundStyle(.secondary)
-                    VStack(alignment: .leading, spacing: 8) {
-                        HStack {
-                            TextField("", text: $tagInput)
-                                .textFieldStyle(.roundedBorder)
-                            Button("Add") {
-                                let trimmed = tagInput.trimmingCharacters(in: .whitespaces)
-                                if !trimmed.isEmpty && !tags.contains(trimmed) {
-                                    tags.append(trimmed)
-                                    tagInput = ""
-                                }
-                            }
-                        }
-                        if !tags.isEmpty {
-                            HStack {
-                                ForEach(tags, id: \.self) { tag in
-                                    HStack {
-                                        Text(tag)
-                                        Button(action: { tags.removeAll { $0 == tag } }) {
-                                            Image(systemName: "xmark.circle.fill")
-                                                .foregroundColor(.secondary)
-                                        }
-                                        .buttonStyle(.plain)
-                                    }
-                                    .padding(.horizontal, 8)
-                                    .padding(.vertical, 4)
-                                    .background(Color.accentColor.opacity(0.2))
-                                    .cornerRadius(4)
-                                }
-                            }
-                        }
-                    }
+                    TagInputView(tags: $tags)
                 }
 
                 GridRow(alignment: .firstTextBaseline) {
@@ -1372,12 +1626,13 @@ struct TaskDetailView: View {
     @State private var editedTask: Task
     @State private var showError = false
     @State private var errorMessage = ""
-    @State private var newTag = ""
     @State private var hasDueDate: Bool
     @State private var subtasks: [SubTask]
     @State private var bodyNotes: String
+    @State private var bodyNotesSelection: TextSelection?
     @State private var newSubtaskTitle = ""
     @FocusState private var subtaskFieldFocused: Bool
+    @FocusState private var notesFocused: Bool
 
     private struct SubTask: Identifiable {
         var id = UUID()
@@ -1494,11 +1749,15 @@ struct TaskDetailView: View {
                     VStack(alignment: .leading, spacing: 8) {
                         Text("Notes")
                             .font(.headline)
-                        TextEditor(text: $bodyNotes)
+                        TextEditor(text: $bodyNotes, selection: $bodyNotesSelection)
                             .frame(minHeight: 100)
                             .border(Color.secondary.opacity(0.2))
+                            .focused($notesFocused)
                             .onChange(of: bodyNotes) { _, _ in rebuildBody() }
                             .autocorrectionDisabled(false)
+                            .background(
+                                MarkdownFormattingShortcuts(text: $bodyNotes, selection: $bodyNotesSelection, isActive: notesFocused)
+                            )
                     }
 
                     // Images
@@ -1517,39 +1776,8 @@ struct TaskDetailView: View {
                     VStack(alignment: .leading, spacing: 8) {
                         Text("Tags")
                             .font(.headline)
-                        
-                        if !editedTask.tags.isEmpty {
-                            HStack {
-                                ForEach(editedTask.tags, id: \.self) { tag in
-                                    HStack {
-                                        Text(tag)
-                                        Button(action: { 
-                                            editedTask.tags.removeAll { $0 == tag }
-                                        }) {
-                                            Image(systemName: "xmark.circle.fill")
-                                                .foregroundColor(.secondary)
-                                        }
-                                        .buttonStyle(.plain)
-                                    }
-                                    .padding(.horizontal, 8)
-                                    .padding(.vertical, 4)
-                                    .background(Color.accentColor.opacity(0.2))
-                                    .cornerRadius(4)
-                                }
-                            }
-                        }
-                        
-                        HStack {
-                            TextField("Add tag", text: $newTag)
-                                .textFieldStyle(.roundedBorder)
-                            Button("Add") {
-                                let trimmed = newTag.trimmingCharacters(in: .whitespaces)
-                                if !trimmed.isEmpty && !editedTask.tags.contains(trimmed) {
-                                    editedTask.tags.append(trimmed)
-                                    newTag = ""
-                                }
-                            }
-                        }
+
+                        TagInputView(tags: $editedTask.tags)
                     }
                     
                     // Due Date
@@ -1638,6 +1866,9 @@ struct TaskDetailView: View {
                                     .font(.caption)
                             }
                         }
+                        // Isolates this field's Return-key submission so it doesn't also
+                        // trigger the task detail's save-and-close `.onSubmit`.
+                        .submitScope()
                         .submitScope(true)
                         .padding(.horizontal, 8)
                         .padding(.vertical, 5)
@@ -1690,7 +1921,7 @@ struct TaskDetailView: View {
             HStack {
                 Button("Delete Task", role: .destructive) {
                     do {
-                        try taskStore.deleteTask(task)
+                        try taskStore.deleteTaskWithUndo(task)
                         dismiss()
                     } catch {
                         errorMessage = "Failed to delete: \(error.localizedDescription)"
@@ -1975,6 +2206,133 @@ struct EditPlanView: View {
         } catch {
             errorMessage = "Failed to save: \(error.localizedDescription)"
             showError = true
+        }
+    }
+}
+
+// MARK: - Tag Input with Autocomplete
+
+/// A tag entry field that suggests existing tags from the global registry
+/// (`TaskStore.settings.availableTags`) as the user types, while still allowing
+/// free-form entry of brand-new tags. Newly typed tags are registered globally
+/// once the owning task is saved (see `TaskStore.registerTags`).
+struct TagInputView: View {
+    @Binding var tags: [String]
+    @EnvironmentObject var taskStore: TaskStore
+    @State private var input = ""
+
+    /// All globally known tags not yet applied to this task, sorted alphabetically. Shown as
+    /// clickable chips so a tag can be added without typing it first.
+    private var availableTagsNotOnTask: [String] {
+        taskStore.settings.availableTags
+            .filter { available in !tags.contains { $0.lowercased() == available.lowercased() } }
+            .sorted { $0.localizedCaseInsensitiveCompare($1) == .orderedAscending }
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            if !tags.isEmpty {
+                FlowLayoutHStack {
+                    ForEach(tags, id: \.self) { tag in
+                        HStack(spacing: 4) {
+                            Text(tag)
+                            Button(action: { tags.removeAll { $0 == tag } }) {
+                                Image(systemName: "xmark.circle.fill")
+                                    .foregroundColor(.secondary)
+                            }
+                            .buttonStyle(.plain)
+                        }
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 4)
+                        .background(Color.accentColor.opacity(0.2))
+                        .cornerRadius(4)
+                    }
+                }
+            }
+
+            HStack {
+                TextField("Add tag", text: $input)
+                    .textFieldStyle(.roundedBorder)
+                    .onSubmit { addTag(input) }
+                Button("Add") { addTag(input) }
+                    .disabled(input.trimmingCharacters(in: .whitespaces).isEmpty)
+            }
+            // Isolates this field's Return-key submission so it doesn't also
+            // trigger an ancestor view's `.onSubmit` (e.g. the task detail's save-and-close).
+            .submitScope()
+
+            if !availableTagsNotOnTask.isEmpty {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Existing tags")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    FlowLayoutHStack {
+                        ForEach(availableTagsNotOnTask, id: \.self) { tag in
+                            Button(action: { addTag(tag) }) {
+                                Text(tag)
+                                    .padding(.horizontal, 8)
+                                    .padding(.vertical, 4)
+                                    .background(Color.gray.opacity(0.15))
+                                    .cornerRadius(4)
+                            }
+                            .buttonStyle(.plain)
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    private func addTag(_ value: String) {
+        let trimmed = value.trimmingCharacters(in: .whitespaces)
+        guard !trimmed.isEmpty, !tags.contains(where: { $0.lowercased() == trimmed.lowercased() }) else {
+            input = ""
+            return
+        }
+        tags.append(trimmed)
+        input = ""
+    }
+}
+
+/// Minimal wrapping horizontal layout for tag chips.
+struct FlowLayoutHStack: Layout {
+    var spacing: CGFloat = 6
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        let maxWidth = proposal.width ?? .infinity
+        var rowWidth: CGFloat = 0
+        var totalHeight: CGFloat = 0
+        var rowHeight: CGFloat = 0
+
+        for subview in subviews {
+            let size = subview.sizeThatFits(.unspecified)
+            if rowWidth + size.width > maxWidth, rowWidth > 0 {
+                totalHeight += rowHeight + spacing
+                rowWidth = 0
+                rowHeight = 0
+            }
+            rowWidth += size.width + spacing
+            rowHeight = max(rowHeight, size.height)
+        }
+        totalHeight += rowHeight
+        return CGSize(width: maxWidth.isFinite ? maxWidth : rowWidth, height: totalHeight)
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        var x = bounds.minX
+        var y = bounds.minY
+        var rowHeight: CGFloat = 0
+
+        for subview in subviews {
+            let size = subview.sizeThatFits(.unspecified)
+            if x + size.width > bounds.maxX, x > bounds.minX {
+                x = bounds.minX
+                y += rowHeight + spacing
+                rowHeight = 0
+            }
+            subview.place(at: CGPoint(x: x, y: y), proposal: ProposedViewSize(size))
+            x += size.width + spacing
+            rowHeight = max(rowHeight, size.height)
         }
     }
 }

@@ -244,8 +244,9 @@ struct MarkdownParser {
             throw ParsingError.invalidFormat
         }
         let planOrder = metadata["plan_order"] as? [String] ?? []
+        let availableTags = metadata["available_tags"] as? [String] ?? []
         
-        return Settings(planOrder: planOrder)
+        return Settings(planOrder: planOrder, availableTags: availableTags)
     }
     
     static func serializeSettings(_ settings: Settings) -> String {
@@ -254,6 +255,12 @@ struct MarkdownParser {
         
         for planName in settings.planOrder {
             yaml += "  - \(yamlQuote(planName))\n"
+        }
+        
+        yaml += "available_tags:\n"
+        
+        for tag in settings.availableTags {
+            yaml += "  - \(yamlQuote(tag))\n"
         }
         
         return yaml

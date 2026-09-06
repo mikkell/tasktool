@@ -88,6 +88,10 @@ plan_order:
   - Work
   - Personal
   - Ideas
+available_tags:
+  - bug
+  - auth
+  - sales
 ```
 
 ### Plan File Format (plan.yaml)
@@ -148,6 +152,7 @@ statuses:
 
 ### Settings Model
 - `planOrder: [String]` - Array of plan names in display order
+- `availableTags: [String]` - Global registry of tags, auto-populated when new tags are used on tasks, reusable across all tasks
 
 ## Architecture Components
 

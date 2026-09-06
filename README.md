@@ -268,7 +268,13 @@ plan_order:
   - Work
   - Personal
   - Ideas
+available_tags:
+  - bug
+  - auth
+  - sales
 ```
+
+> `available_tags` is a global registry of tags. Any tag added to a task is automatically saved here so it can be reused on other tasks without retyping. Tags can also be renamed or deleted for all tasks at once from Settings → Tags.
 
 ### File Naming
 

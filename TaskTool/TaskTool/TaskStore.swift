@@ -17,17 +17,27 @@ func debugLog(_ message: @autoclosure () -> String) {
     #endif
 }
 
+/// A transient, undoable delete action surfaced as a toast (see `TaskStore.pendingUndo`).
+/// The toast auto-dismisses after a few seconds; tapping "Undo" before then runs `undo`.
+struct PendingUndo: Identifiable {
+    let id = UUID()
+    let message: String
+    let undo: () -> Void
+}
+
 @MainActor
 class TaskStore: ObservableObject {
     @Published var plans: [Plan] = []
     @Published var tasks: [Task] = []
     @Published var storageURL: URL?
     @Published var settings: Settings = Settings()
+    @Published var pendingUndo: PendingUndo?
     
     private let fileManager = FileManager.default
     private var fileWatcher: DispatchSourceFileSystemObject?
     private var planWatchers: [String: DispatchSourceFileSystemObject] = [:]  // keyed by plan folder name
     private var isSaving = false  // Flag to prevent reload during save
+    private var pendingUndoDismissWorkItem: DispatchWorkItem?
     private var reloadDebounceWork: DispatchWorkItem?  // Debounce rapid file system events
     private var savingWorkItem: DispatchWorkItem?  // Single cancellable timer for isSaving reset
     
@@ -389,6 +399,17 @@ class TaskStore: ObservableObject {
         settings.planOrder.removeAll { $0 == plan.name }
         try saveSettings()
     }
+
+    /// Deletes a plan (and all its tasks) and offers a temporary "Undo" toast (see
+    /// `pendingUndo`) that restores the plan folder, its `plan.yaml`, and every task file
+    /// exactly as they were.
+    func deletePlanWithUndo(_ plan: Plan) throws {
+        let planTasks = tasks.filter { $0.plan == plan.name }
+        try deletePlan(plan)
+        offerUndo(message: "Deleted plan \"\(plan.name)\"") { [weak self] in
+            try? self?.restorePlan(plan, tasks: planTasks)
+        }
+    }
     
     /// Rename a plan's folder and write all updated properties in a single operation.
     /// `updatedPlan` must have the new `name` (and any other changed fields) already set.
@@ -484,6 +505,8 @@ class TaskStore: ObservableObject {
             tasks.append(task)
         }
         debugLog("✅ Task added to tasks array. Total tasks: \(tasks.count)")
+
+        try? registerTags(task.tags)
     }
 
     func updateTask(_ task: Task) throws {
@@ -533,8 +556,82 @@ class TaskStore: ObservableObject {
         
         // Update in-memory array
         tasks[index] = updatedTask
+
+        try? registerTags(updatedTask.tags)
     }
-    
+
+    /// Adds any tags not already present in the global tag registry (`settings.availableTags`),
+    /// so they become available for reuse on other tasks. Comparison is case-insensitive to
+    /// avoid near-duplicate entries like "Bug" and "bug"; the first-seen casing wins.
+    func registerTags(_ tags: [String]) throws {
+        let existingLowercased = Set(settings.availableTags.map { $0.lowercased() })
+        let newTags = tags.filter { !$0.isEmpty && !existingLowercased.contains($0.lowercased()) }
+        guard !newTags.isEmpty else { return }
+
+        settings.availableTags.append(contentsOf: newTags)
+        settings.availableTags.sort { $0.localizedCaseInsensitiveCompare($1) == .orderedAscending }
+        try saveSettings()
+    }
+
+    /// Renames a tag across the global registry and every task that currently uses it.
+    func renameGlobalTag(from oldName: String, to newName: String) throws {
+        let trimmed = newName.trimmingCharacters(in: .whitespaces)
+        guard !trimmed.isEmpty, trimmed != oldName else { return }
+
+        if let index = settings.availableTags.firstIndex(of: oldName) {
+            settings.availableTags.remove(at: index)
+        }
+        if !settings.availableTags.contains(where: { $0.lowercased() == trimmed.lowercased() }) {
+            settings.availableTags.append(trimmed)
+        }
+        settings.availableTags.sort { $0.localizedCaseInsensitiveCompare($1) == .orderedAscending }
+
+        try applyToAllTasks(containingTag: oldName) { task in
+            var updated = task
+            updated.tags = updated.tags.map { $0 == oldName ? trimmed : $0 }
+            // Collapse accidental duplicates (e.g. task already had both old and new name).
+            var seen = Set<String>()
+            updated.tags = updated.tags.filter { seen.insert($0.lowercased()).inserted }
+            return updated
+        }
+
+        try saveSettings()
+    }
+
+    /// Removes a tag from the global registry and from every task that currently uses it.
+    func deleteGlobalTag(_ name: String) throws {
+        settings.availableTags.removeAll { $0 == name }
+
+        try applyToAllTasks(containingTag: name) { task in
+            var updated = task
+            updated.tags.removeAll { $0 == name }
+            return updated
+        }
+
+        try saveSettings()
+    }
+
+    /// Applies `transform` to every in-memory task that has `tag`, rewriting each task file
+    /// in place (no plan/filename change is expected here) and updating the in-memory array.
+    private func applyToAllTasks(containingTag tag: String, transform: (Task) -> Task) throws {
+        guard let storageURL = storageURL else { return }
+
+        for (index, task) in tasks.enumerated() where task.tags.contains(tag) {
+            let updatedTask = transform(task)
+            guard updatedTask.tags != task.tags else { continue }
+
+            let planFolder = storageURL.appendingPathComponent(updatedTask.plan)
+            let taskFile = resolveTaskFile(for: task, in: planFolder)
+                ?? planFolder.appendingPathComponent(task.fileName)
+
+            markSaving()
+            let content = MarkdownParser.serializeTask(updatedTask)
+            try content.write(to: taskFile, atomically: false, encoding: .utf8)
+
+            tasks[index] = updatedTask
+        }
+    }
+
     /// Resolves the actual on-disk URL for a task file.
     /// First tries the computed `task.fileName`. If that file doesn't exist (e.g. the slug was
     /// generated from a title that had trailing whitespace, producing a trailing-dash filename),
@@ -571,6 +668,180 @@ class TaskStore: ObservableObject {
         try fileManager.removeItem(at: taskFile)
 
         tasks.removeAll { $0.id == task.id }
+    }
+
+    /// Deletes a task and offers a temporary "Undo" toast (see `pendingUndo`) that
+    /// re-creates the task file exactly as it was.
+    func deleteTaskWithUndo(_ task: Task) throws {
+        try deleteTask(task)
+        offerUndo(message: "Deleted \"\(task.title)\"") { [weak self] in
+            try? self?.restoreTask(task)
+        }
+    }
+
+    /// Deletes multiple tasks (e.g. from a multi-select bulk action) and offers a single
+    /// "Undo" toast that restores all of them. Continues past per-task failures so one bad
+    /// file doesn't block deletion of the rest; the first error encountered (if any) is
+    /// rethrown after every task has been attempted.
+    func deleteTasksWithUndo(_ tasksToDelete: [Task]) throws {
+        guard !tasksToDelete.isEmpty else { return }
+
+        var firstError: Error?
+        var deleted: [Task] = []
+        for task in tasksToDelete {
+            do {
+                try deleteTask(task)
+                deleted.append(task)
+            } catch {
+                if firstError == nil { firstError = error }
+            }
+        }
+
+        if !deleted.isEmpty {
+            let message = deleted.count == 1
+                ? "Deleted \"\(deleted[0].title)\""
+                : "Deleted \(deleted.count) tasks"
+            offerUndo(message: message) { [weak self] in
+                for task in deleted {
+                    try? self?.restoreTask(task)
+                }
+            }
+        }
+
+        if let firstError { throw firstError }
+    }
+
+    /// Moves multiple tasks to a different plan in one action (e.g. from a multi-select bulk
+    /// action). Mirrors the single-task drag-to-plan behavior in `ContentView`: if the target
+    /// plan doesn't have a status matching the task's current one, the task is mapped to the
+    /// target plan's first status. Continues past per-task failures; the first error (if any)
+    /// is rethrown after every task has been attempted.
+    func moveTasks(_ tasksToMove: [Task], toPlan targetPlan: Plan) throws {
+        var firstError: Error?
+        let sortedTargetStatuses = targetPlan.statuses.sorted { $0.order < $1.order }
+
+        for task in tasksToMove {
+            guard task.plan != targetPlan.name else { continue }
+
+            var updated = task
+            updated.plan = targetPlan.name
+
+            let hasMatchingStatus = targetPlan.statuses.contains { $0.name == task.status }
+            if !hasMatchingStatus, let firstStatus = sortedTargetStatuses.first {
+                updated.status = firstStatus.name
+            }
+
+            do {
+                try updateTask(updated)
+            } catch {
+                if firstError == nil { firstError = error }
+            }
+        }
+
+        if let firstError { throw firstError }
+    }
+
+    /// Moves multiple tasks to a different status column within their current plan in one
+    /// action (e.g. from a multi-select bulk action). Continues past per-task failures; the
+    /// first error (if any) is rethrown after every task has been attempted.
+    func moveTasks(_ tasksToMove: [Task], toStatus statusName: String) throws {
+        var firstError: Error?
+
+        for task in tasksToMove {
+            guard task.status != statusName else { continue }
+
+            var updated = task
+            updated.status = statusName
+
+            do {
+                try updateTask(updated)
+            } catch {
+                if firstError == nil { firstError = error }
+            }
+        }
+
+        if let firstError { throw firstError }
+    }
+
+    /// Shows a transient "Undo" toast (auto-dismissing after a few seconds) offering to
+    /// reverse a just-performed delete via `action`.
+    private func offerUndo(message: String, action: @escaping () -> Void) {
+        pendingUndoDismissWorkItem?.cancel()
+
+        let toast = PendingUndo(message: message, undo: action)
+        pendingUndo = toast
+
+        let workItem = DispatchWorkItem { [weak self] in
+            guard let self, self.pendingUndo?.id == toast.id else { return }
+            self.pendingUndo = nil
+        }
+        pendingUndoDismissWorkItem = workItem
+        DispatchQueue.main.asyncAfter(deadline: .now() + 6, execute: workItem)
+    }
+
+    /// Dismisses the current undo toast immediately (e.g. after the user taps "Undo").
+    func dismissPendingUndo() {
+        pendingUndoDismissWorkItem?.cancel()
+        pendingUndoDismissWorkItem = nil
+        pendingUndo = nil
+    }
+
+    /// Re-creates a previously deleted task file exactly as it was. No-ops if the owning
+    /// plan folder no longer exists (e.g. the plan itself was also deleted in the meantime).
+    private func restoreTask(_ task: Task) throws {
+        guard let storageURL = storageURL else { return }
+
+        let planFolder = storageURL.appendingPathComponent(task.plan)
+        guard fileManager.fileExists(atPath: planFolder.path) else { return }
+
+        let taskFile = planFolder.appendingPathComponent(task.fileName)
+        markSaving()
+        let content = MarkdownParser.serializeTask(task)
+        try content.write(to: taskFile, atomically: false, encoding: .utf8)
+
+        if !tasks.contains(where: { $0.id == task.id }) {
+            tasks.append(task)
+        }
+    }
+
+    /// Re-creates a previously deleted plan folder (`plan.yaml` plus every task file) exactly
+    /// as it was, restoring its original position in `settings.planOrder`. No-ops if a plan
+    /// with the same folder name already exists (e.g. a new plan was created in its place).
+    private func restorePlan(_ plan: Plan, tasks tasksToRestore: [Task]) throws {
+        guard let storageURL = storageURL else { return }
+
+        let planFolder = storageURL.appendingPathComponent(plan.folderName)
+        guard !fileManager.fileExists(atPath: planFolder.path) else { return }
+
+        markSaving()
+        try fileManager.createDirectory(at: planFolder, withIntermediateDirectories: true)
+
+        let planFile = planFolder.appendingPathComponent("plan.yaml")
+        let content = MarkdownParser.serializePlan(plan)
+        try content.write(to: planFile, atomically: false, encoding: .utf8)
+
+        if !plans.contains(where: { $0.id == plan.id }) {
+            plans.append(plan)
+        }
+
+        for task in tasksToRestore {
+            let taskFile = planFolder.appendingPathComponent(task.fileName)
+            let taskContent = MarkdownParser.serializeTask(task)
+            try? taskContent.write(to: taskFile, atomically: false, encoding: .utf8)
+            if !tasks.contains(where: { $0.id == task.id }) {
+                tasks.append(task)
+            }
+        }
+
+        if !settings.planOrder.contains(plan.name) {
+            let insertIndex = min(plan.order, settings.planOrder.count)
+            settings.planOrder.insert(plan.name, at: insertIndex)
+            try saveSettings()
+        }
+
+        if fileWatcher != nil, let watcher = makeDirectoryWatcher(for: planFolder) {
+            planWatchers[plan.folderName] = watcher
+        }
     }
     
     /// Copies a dropped file (e.g. an image dragged onto an open task) into the plan's

@@ -406,6 +406,157 @@ final class TaskStoreTests: XCTestCase {
         XCTAssertThrowsError(try taskStore.deleteTask(phantom))
     }
 
+    // MARK: - Undo delete
+
+    func testDeleteTaskWithUndoSetsPendingUndo() throws {
+        try taskStore.createPlan(Plan(name: "Work", color: "blue"))
+        let task = Task(title: "Delete Me", plan: "Work", status: "To Do")
+        try taskStore.createTask(task)
+
+        try taskStore.deleteTaskWithUndo(task)
+
+        XCTAssertEqual(taskStore.tasks.count, 0)
+        XCTAssertNotNil(taskStore.pendingUndo)
+        XCTAssertTrue(taskStore.pendingUndo?.message.contains("Delete Me") ?? false)
+    }
+
+    func testUndoingTaskDeleteRestoresFileAndInMemoryTask() throws {
+        try taskStore.createPlan(Plan(name: "Work", color: "blue"))
+        let task = Task(title: "Delete Me", plan: "Work", status: "To Do", tags: ["urgent"])
+        try taskStore.createTask(task)
+        let file = tempDir.appendingPathComponent("Work/delete-me.md")
+
+        try taskStore.deleteTaskWithUndo(task)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: file.path))
+
+        taskStore.pendingUndo?.undo()
+
+        XCTAssertTrue(FileManager.default.fileExists(atPath: file.path))
+        XCTAssertEqual(taskStore.tasks.count, 1)
+        XCTAssertEqual(taskStore.tasks.first?.id, task.id)
+        XCTAssertEqual(taskStore.tasks.first?.tags, ["urgent"])
+    }
+
+    func testDismissPendingUndoClearsIt() throws {
+        try taskStore.createPlan(Plan(name: "Work", color: "blue"))
+        let task = Task(title: "Delete Me", plan: "Work", status: "To Do")
+        try taskStore.createTask(task)
+        try taskStore.deleteTaskWithUndo(task)
+        XCTAssertNotNil(taskStore.pendingUndo)
+
+        taskStore.dismissPendingUndo()
+        XCTAssertNil(taskStore.pendingUndo)
+    }
+
+    func testDeletePlanWithUndoSetsPendingUndo() throws {
+        try taskStore.createPlan(Plan(name: "Work", color: "blue"))
+        try taskStore.createTask(Task(title: "Task A", plan: "Work", status: "To Do"))
+
+        let plan = taskStore.plans.first { $0.name == "Work" }!
+        try taskStore.deletePlanWithUndo(plan)
+
+        XCTAssertTrue(taskStore.plans.isEmpty)
+        XCTAssertNotNil(taskStore.pendingUndo)
+        XCTAssertTrue(taskStore.pendingUndo?.message.contains("Work") ?? false)
+    }
+
+    func testUndoingPlanDeleteRestoresPlanAndTasks() throws {
+        try taskStore.createPlan(Plan(name: "Work", color: "blue"))
+        try taskStore.createTask(Task(title: "Task A", plan: "Work", status: "To Do"))
+        try taskStore.createTask(Task(title: "Task B", plan: "Work", status: "In Progress"))
+
+        let plan = taskStore.plans.first { $0.name == "Work" }!
+        let planFolder = tempDir.appendingPathComponent("Work")
+
+        try taskStore.deletePlanWithUndo(plan)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: planFolder.path))
+
+        taskStore.pendingUndo?.undo()
+
+        XCTAssertTrue(FileManager.default.fileExists(atPath: planFolder.appendingPathComponent("plan.yaml").path))
+        XCTAssertEqual(taskStore.plans.count, 1)
+        XCTAssertEqual(taskStore.tasks.count, 2)
+        XCTAssertEqual(Set(taskStore.tasks.map { $0.title }), Set(["Task A", "Task B"]))
+        XCTAssertTrue(taskStore.settings.planOrder.contains("Work"))
+    }
+
+    // MARK: - Bulk multi-select actions
+
+    func testDeleteTasksWithUndoRemovesAllAndOffersSingleUndo() throws {
+        try taskStore.createPlan(Plan(name: "Work", color: "blue"))
+        let taskA = Task(title: "Task A", plan: "Work", status: "To Do")
+        let taskB = Task(title: "Task B", plan: "Work", status: "To Do")
+        try taskStore.createTask(taskA)
+        try taskStore.createTask(taskB)
+
+        try taskStore.deleteTasksWithUndo([taskA, taskB])
+
+        XCTAssertEqual(taskStore.tasks.count, 0)
+        XCTAssertNotNil(taskStore.pendingUndo)
+        XCTAssertTrue(taskStore.pendingUndo?.message.contains("2") ?? false)
+    }
+
+    func testUndoingBulkDeleteRestoresAllTasks() throws {
+        try taskStore.createPlan(Plan(name: "Work", color: "blue"))
+        let taskA = Task(title: "Task A", plan: "Work", status: "To Do")
+        let taskB = Task(title: "Task B", plan: "Work", status: "To Do")
+        try taskStore.createTask(taskA)
+        try taskStore.createTask(taskB)
+
+        try taskStore.deleteTasksWithUndo([taskA, taskB])
+        taskStore.pendingUndo?.undo()
+
+        XCTAssertEqual(taskStore.tasks.count, 2)
+        XCTAssertEqual(Set(taskStore.tasks.map { $0.title }), Set(["Task A", "Task B"]))
+    }
+
+    func testMoveTasksToPlanUpdatesPlanAndMapsUnmatchedStatus() throws {
+        try taskStore.createPlan(Plan(name: "Work", color: "blue"))
+        try taskStore.createPlan(Plan(name: "Personal", color: "green"))
+        let taskA = Task(title: "Task A", plan: "Work", status: "In Progress")
+        try taskStore.createTask(taskA)
+
+        let personal = taskStore.plans.first { $0.name == "Personal" }!
+        try taskStore.moveTasks([taskA], toPlan: personal)
+
+        let moved = taskStore.tasks.first { $0.id == taskA.id }
+        XCTAssertEqual(moved?.plan, "Personal")
+        // "In Progress" exists in the default Personal plan statuses, so it should carry over.
+        XCTAssertEqual(moved?.status, "In Progress")
+    }
+
+    func testMoveTasksToPlanMapsToFirstStatusWhenNoMatch() throws {
+        try taskStore.createPlan(Plan(name: "Work", color: "blue"))
+        var customPlan = Plan(name: "Custom", color: "green")
+        customPlan.statuses = [
+            Plan.TaskStatus(name: "Backlog", color: "gray", order: 0),
+            Plan.TaskStatus(name: "Shipped", color: "green", order: 1)
+        ]
+        try taskStore.createPlan(customPlan)
+
+        let taskA = Task(title: "Task A", plan: "Work", status: "In Progress")
+        try taskStore.createTask(taskA)
+
+        let target = taskStore.plans.first { $0.name == "Custom" }!
+        try taskStore.moveTasks([taskA], toPlan: target)
+
+        let moved = taskStore.tasks.first { $0.id == taskA.id }
+        XCTAssertEqual(moved?.plan, "Custom")
+        XCTAssertEqual(moved?.status, "Backlog")
+    }
+
+    func testMoveTasksToStatusUpdatesAllSelectedTasks() throws {
+        try taskStore.createPlan(Plan(name: "Work", color: "blue"))
+        let taskA = Task(title: "Task A", plan: "Work", status: "To Do")
+        let taskB = Task(title: "Task B", plan: "Work", status: "To Do")
+        try taskStore.createTask(taskA)
+        try taskStore.createTask(taskB)
+
+        try taskStore.moveTasks([taskA, taskB], toStatus: "Done")
+
+        XCTAssertEqual(taskStore.tasks.filter { $0.status == "Done" }.count, 2)
+    }
+
     // MARK: - Task deduplication
 
     func testLoadAllDataDeduplicatesByUUID() throws {
@@ -623,6 +774,66 @@ final class TaskStoreTests: XCTestCase {
         fresh.loadAllData()
 
         XCTAssertEqual(fresh.settings.planOrder, ["X", "Y", "Z"])
+    }
+
+    // MARK: - Tags
+
+    func testCreateTaskRegistersNewTagsGlobally() throws {
+        try taskStore.createPlan(Plan(name: "Work", color: "blue"))
+        let task = Task(title: "Fix bug", plan: "Work", status: "To Do", tags: ["bug", "auth"])
+        try taskStore.createTask(task)
+
+        XCTAssertEqual(Set(taskStore.settings.availableTags), Set(["bug", "auth"]))
+    }
+
+    func testUpdateTaskRegistersNewTagsGlobally() throws {
+        try taskStore.createPlan(Plan(name: "Work", color: "blue"))
+        let task = Task(title: "Fix bug", plan: "Work", status: "To Do")
+        try taskStore.createTask(task)
+
+        var updated = task
+        updated.tags = ["urgent"]
+        try taskStore.updateTask(updated)
+
+        XCTAssertTrue(taskStore.settings.availableTags.contains("urgent"))
+    }
+
+    func testRegisterTagsDoesNotDuplicateCaseInsensitively() throws {
+        try taskStore.registerTags(["bug"])
+        try taskStore.registerTags(["Bug", "auth"])
+
+        XCTAssertEqual(taskStore.settings.availableTags.count, 2)
+        XCTAssertTrue(taskStore.settings.availableTags.contains("bug"))
+        XCTAssertTrue(taskStore.settings.availableTags.contains("auth"))
+    }
+
+    func testRenameGlobalTagUpdatesRegistryAndTasks() throws {
+        try taskStore.createPlan(Plan(name: "Work", color: "blue"))
+        let task = Task(title: "Fix bug", plan: "Work", status: "To Do", tags: ["bug"])
+        try taskStore.createTask(task)
+
+        try taskStore.renameGlobalTag(from: "bug", to: "defect")
+
+        XCTAssertFalse(taskStore.settings.availableTags.contains("bug"))
+        XCTAssertTrue(taskStore.settings.availableTags.contains("defect"))
+        XCTAssertEqual(taskStore.tasks.first?.tags, ["defect"])
+
+        // File on disk should reflect the rename too.
+        let file = tempDir.appendingPathComponent("Work/fix-bug.md")
+        let content = try String(contentsOf: file, encoding: .utf8)
+        XCTAssertTrue(content.contains("defect"))
+        XCTAssertFalse(content.contains("- bug"))
+    }
+
+    func testDeleteGlobalTagRemovesFromRegistryAndTasks() throws {
+        try taskStore.createPlan(Plan(name: "Work", color: "blue"))
+        let task = Task(title: "Fix bug", plan: "Work", status: "To Do", tags: ["bug", "urgent"])
+        try taskStore.createTask(task)
+
+        try taskStore.deleteGlobalTag("bug")
+
+        XCTAssertFalse(taskStore.settings.availableTags.contains("bug"))
+        XCTAssertEqual(taskStore.tasks.first?.tags, ["urgent"])
     }
 
     // MARK: - Plan deletion / status preservation

@@ -346,6 +346,13 @@ final class MarkdownParserTests: XCTestCase {
         XCTAssertTrue(yaml.contains("- \"Has: Colon\""))
     }
 
+    func testYamlQuotingForSettingsAvailableTags() {
+        let settings = Settings(availableTags: ["bug", "Has: Colon"])
+        let yaml = MarkdownParser.serializeSettings(settings)
+        XCTAssertTrue(yaml.contains("- bug"))
+        XCTAssertTrue(yaml.contains("- \"Has: Colon\""))
+    }
+
     // MARK: - Settings parsing
 
     func testParseSettings() throws {
@@ -360,10 +367,24 @@ final class MarkdownParserTests: XCTestCase {
         XCTAssertEqual(settings.planOrder, ["Work", "Personal", "Ideas"])
     }
 
+    func testParseSettingsAvailableTags() throws {
+        let yaml = """
+        # TaskTool Settings
+        plan_order:
+          - Work
+        available_tags:
+          - bug
+          - auth
+        """
+        let settings = try MarkdownParser.parseSettings(from: yaml)
+        XCTAssertEqual(settings.availableTags, ["bug", "auth"])
+    }
+
     func testParseEmptySettings() throws {
         let yaml = "# TaskTool Settings\nplan_order:\n"
         let settings = try MarkdownParser.parseSettings(from: yaml)
         XCTAssertTrue(settings.planOrder.isEmpty)
+        XCTAssertTrue(settings.availableTags.isEmpty)
     }
 
     func testSerializeSettings() {
@@ -376,9 +397,10 @@ final class MarkdownParserTests: XCTestCase {
     }
 
     func testRoundtripSettings() throws {
-        let original = Settings(planOrder: ["Work", "Personal", "Side Projects"])
+        let original = Settings(planOrder: ["Work", "Personal", "Side Projects"], availableTags: ["bug", "auth", "sales"])
         let serialized = MarkdownParser.serializeSettings(original)
         let parsed = try MarkdownParser.parseSettings(from: serialized)
         XCTAssertEqual(parsed.planOrder, original.planOrder)
+        XCTAssertEqual(parsed.availableTags, original.availableTags)
     }
 }
