@@ -697,13 +697,12 @@ struct PlanDetailView: View {
             .sheet(isPresented: $showingEditStatuses) {
                 EditStatusesView(plan: plan)
             }
-            .alert("Archive Done Tasks", isPresented: $showingArchiveConfirmation) {
-                Button("Cancel", role: .cancel) {}
-                Button("Archive", role: .destructive) {
-                    archiveDoneTasks()
-                }
-            } message: {
-                Text("Archive \(doneTasks.count) completed task\(doneTasks.count == 1 ? "" : "s")? They will be moved to an 'Archived' folder.")
+            .sheet(isPresented: $showingArchiveConfirmation) {
+                ArchiveTasksSheet(
+                    taskCount: doneTasks.count,
+                    defaultName: defaultArchiveFolderName,
+                    onArchive: { folderName in archiveDoneTasks(subfolder: folderName) }
+                )
             }
             .alert("Delete \(selectedTaskIDs.count) Task\(selectedTaskIDs.count == 1 ? "" : "s")?", isPresented: $showingBulkDeleteConfirm) {
                 Button("Cancel", role: .cancel) {}
@@ -719,11 +718,18 @@ struct PlanDetailView: View {
         }
     }
     
-    private func archiveDoneTasks() {
+    /// Today's date formatted for use as the default archive subfolder name, e.g. "2026-09-07".
+    private var defaultArchiveFolderName: String {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "yyyy-MM-dd"
+        return formatter.string(from: Date())
+    }
+    
+    private func archiveDoneTasks(subfolder: String) {
         guard let plan = plan else { return }
         
         do {
-            try taskStore.archiveDoneTasks(for: plan, tasks: doneTasks)
+            try taskStore.archiveDoneTasks(for: plan, tasks: doneTasks, subfolder: subfolder)
         } catch {
             debugLog("❌ Failed to archive tasks: \(error.localizedDescription)")
         }
@@ -1023,6 +1029,66 @@ struct TaskCard: View {
                 isHovered = hovering
             }
         }
+    }
+}
+
+/// Sheet shown when archiving completed tasks, prompting for a subfolder name (inside the
+/// plan's `Archived/` folder) so a batch of tasks done together (e.g. in a given week) can be
+/// reviewed as a group later. Defaults to the current date.
+private struct ArchiveTasksSheet: View {
+    let taskCount: Int
+    let defaultName: String
+    let onArchive: (String) -> Void
+    @Environment(\.dismiss) var dismiss
+    @State private var folderName: String = ""
+    @FocusState private var isFocused: Bool
+
+    private var trimmedName: String {
+        folderName.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            Text("Archive \(taskCount) Completed Task\(taskCount == 1 ? "" : "s")")
+                .font(.title2)
+                .fontWeight(.semibold)
+
+            Text("Tasks will be moved into a subfolder inside 'Archived', so you can find everything archived together later.")
+                .font(.subheadline)
+                .foregroundColor(.secondary)
+
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Folder Name")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+                TextField("Folder name", text: $folderName)
+                    .textFieldStyle(.roundedBorder)
+                    .focused($isFocused)
+                    .submitLabel(.done)
+                    .onSubmit { archive() }
+            }
+
+            HStack {
+                Spacer()
+                Button("Cancel") { dismiss() }
+                    .keyboardShortcut(.cancelAction)
+                Button("Archive") { archive() }
+                    .keyboardShortcut(.defaultAction)
+                    .disabled(trimmedName.isEmpty)
+            }
+        }
+        .padding(24)
+        .frame(width: 380)
+        .onAppear {
+            folderName = defaultName
+            isFocused = true
+        }
+    }
+
+    private func archive() {
+        guard !trimmedName.isEmpty else { return }
+        onArchive(trimmedName)
+        dismiss()
     }
 }
 

@@ -905,11 +905,22 @@ class TaskStore: ObservableObject {
         return (attachmentsFolder, destinationFile)
     }
     
-    func archiveDoneTasks(for plan: Plan, tasks doneTasks: [Task]) throws {
+    /// Archives the given tasks (typically ones in a "Done" status) by moving their files into
+    /// `Archived/` inside the plan's folder. If `subfolder` is non-empty (e.g. a user-chosen
+    /// name like "2026-09-07" for the current date), tasks are grouped into
+    /// `Archived/<subfolder>/` instead, so an entire archiving batch (e.g. "all tasks done this
+    /// week") can be reviewed together later. `subfolder` is sanitized to strip path separators
+    /// and other characters that aren't safe as a single folder name.
+    func archiveDoneTasks(for plan: Plan, tasks doneTasks: [Task], subfolder: String = "") throws {
         guard let storageURL = storageURL else { return }
         
         let planFolder = storageURL.appendingPathComponent(plan.folderName)
-        let archiveFolder = planFolder.appendingPathComponent("Archived")
+        var archiveFolder = planFolder.appendingPathComponent("Archived")
+
+        let sanitizedSubfolder = Self.sanitizeFolderName(subfolder)
+        if !sanitizedSubfolder.isEmpty {
+            archiveFolder = archiveFolder.appendingPathComponent(sanitizedSubfolder)
+        }
         
         // Create archive folder if it doesn't exist
         if !fileManager.fileExists(atPath: archiveFolder.path) {
@@ -922,7 +933,13 @@ class TaskStore: ObservableObject {
         for task in doneTasks {
             let currentFile = resolveTaskFile(for: task, in: planFolder)
                 ?? planFolder.appendingPathComponent(task.fileName)
-            let archivedFile = archiveFolder.appendingPathComponent(task.fileName)
+            var archivedFile = archiveFolder.appendingPathComponent(task.fileName)
+
+            // Avoid clobbering a same-named file already archived in this subfolder.
+            if fileManager.fileExists(atPath: archivedFile.path) {
+                let base = (task.fileName as NSString).deletingPathExtension
+                archivedFile = archiveFolder.appendingPathComponent("\(base)-\(task.id.uuidString.prefix(8)).md")
+            }
             
             if fileManager.fileExists(atPath: currentFile.path) {
                 try fileManager.moveItem(at: currentFile, to: archivedFile)
@@ -934,6 +951,14 @@ class TaskStore: ObservableObject {
         }
         
         debugLog("✅ Archived \(doneTasks.count) task(s)")
+    }
+    
+    /// Strips path separators and other characters unsafe for a single filesystem folder name
+    /// component (e.g. from user-provided archive subfolder names), trimming whitespace too.
+    private static func sanitizeFolderName(_ name: String) -> String {
+        let disallowed = CharacterSet(charactersIn: "/\\:")
+        let cleaned = name.components(separatedBy: disallowed).joined(separator: "-")
+        return cleaned.trimmingCharacters(in: .whitespacesAndNewlines)
     }
     
     private func startWatching() {

@@ -693,6 +693,52 @@ final class TaskStoreTests: XCTestCase {
         XCTAssertTrue(FileManager.default.fileExists(atPath: archivePath))
     }
 
+    func testArchiveTasksWithSubfolderMovesFileIntoNamedSubfolder() throws {
+        let plan = Plan(name: "Work", color: "blue")
+        try taskStore.createPlan(plan)
+        let task = Task(title: "Archive Me", plan: "Work", status: "Done")
+        try taskStore.createTask(task)
+
+        try taskStore.archiveDoneTasks(for: plan, tasks: [task], subfolder: "2026-09-07")
+
+        XCTAssertTrue(FileManager.default.fileExists(
+            atPath: tempDir.appendingPathComponent("Work/Archived/2026-09-07/archive-me.md").path))
+        XCTAssertFalse(FileManager.default.fileExists(
+            atPath: tempDir.appendingPathComponent("Work/Archived/archive-me.md").path))
+    }
+
+    func testArchiveTasksSanitizesSubfolderName() throws {
+        let plan = Plan(name: "Work", color: "blue")
+        try taskStore.createPlan(plan)
+        let task = Task(title: "Archive Me", plan: "Work", status: "Done")
+        try taskStore.createTask(task)
+
+        try taskStore.archiveDoneTasks(for: plan, tasks: [task], subfolder: "Week 31/2026")
+
+        XCTAssertTrue(FileManager.default.fileExists(
+            atPath: tempDir.appendingPathComponent("Work/Archived/Week 31-2026/archive-me.md").path))
+    }
+
+    func testArchivingTwoBatchesWithSameSubfolderDoesNotOverwrite() throws {
+        let plan = Plan(name: "Work", color: "blue")
+        try taskStore.createPlan(plan)
+        let taskA = Task(title: "Same Name", plan: "Work", status: "Done")
+        try taskStore.createTask(taskA)
+        try taskStore.archiveDoneTasks(for: plan, tasks: [taskA], subfolder: "2026-09-07")
+
+        // taskA's file has now been moved out of "Work/", so a second task with the exact same
+        // title creates the same slug filename with no collision suffix at creation time. Only
+        // when it's archived into the SAME subfolder should the archive-time collision guard
+        // kick in and avoid overwriting taskA's already-archived file.
+        let taskB = Task(title: "Same Name", plan: "Work", status: "Done")
+        try taskStore.createTask(taskB)
+        try taskStore.archiveDoneTasks(for: plan, tasks: [taskB], subfolder: "2026-09-07")
+
+        let subfolder = tempDir.appendingPathComponent("Work/Archived/2026-09-07")
+        let contents = try FileManager.default.contentsOfDirectory(atPath: subfolder.path)
+        XCTAssertEqual(contents.count, 2)
+    }
+
     // MARK: - Persistence / loadAllData
 
     func testLoadAllDataLoadsSavedPlans() throws {

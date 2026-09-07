@@ -16,7 +16,7 @@ A powerful, file-based task management application for macOS that stores all dat
 - 🏷️ **Tagging System** — Add tags to tasks for easy search and filtering
 - 📅 **Due Dates** — Optional per-task due dates with a calendar picker
 - 🔍 **Drag & Drop** — Move tasks between status columns and between plans
-- 📦 **Archive** — Move completed tasks to an `Archived/` subfolder with one click
+- 📦 **Archive** — Move completed tasks into a named subfolder under `Archived/` (defaults to the current date), so a batch of tasks done together stays grouped for later review
 - 💻 **CLI-Friendly** — All files are plain text; manipulate with `grep`, `sed`, LLMs, or any editor
 - 🔗 **Obsidian Compatible** — Full YAML 1.2 frontmatter compatibility via [Yams](https://github.com/jpsim/Yams)
 - ☁️ **OneDrive / cloud-folder safe** — Hardened file writes and file-watcher debouncing prevent sync conflicts
@@ -307,7 +307,7 @@ If two tasks produce the same filename, the second receives a UUID suffix: `dupl
 | Move status | Drag task card to the target column |
 | Move to different plan | Drag task card to the plan name in the sidebar |
 | Delete | Open task detail → "Delete Task" |
-| Archive done tasks | Toolbar → "Archive Done" → moves all Done-status tasks to `{plan}/Archived/` |
+| Archive done tasks | Toolbar → "Archive Done" → prompts for a subfolder name (defaults to today's date) → moves all Done-status tasks to `{plan}/Archived/{folder}/` |
 
 ### Keyboard Shortcuts
 
