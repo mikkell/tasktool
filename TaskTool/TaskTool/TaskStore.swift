@@ -763,7 +763,101 @@ class TaskStore: ObservableObject {
         if let firstError { throw firstError }
     }
 
-    /// Shows a transient "Undo" toast (auto-dismissing after a few seconds) offering to
+    // MARK: - Bundling (drag one task onto another to group them)
+
+    /// Bundles `draggedTask` onto `targetTask`, which was dropped onto (e.g. by dragging one
+    /// Kanban card onto another). Behavior:
+    /// - If neither task is already a bundle, creates a new bundle "container" task titled
+    ///   "Bundle: <targetTask.title>" holding both tasks, in `targetTask`'s plan/status.
+    /// - If `targetTask` is already a bundle container, `draggedTask` is simply added to it.
+    /// - If `targetTask` is itself a bundled child (defensive case — shouldn't normally be
+    ///   reachable from the board since bundled children are hidden), `draggedTask` is added to
+    ///   that same container.
+    /// Bundled tasks share their container's plan/status — moving the container moves every
+    /// task inside it as a unit. No-ops if `draggedTask` is itself a bundle container (bundling
+    /// bundles together isn't supported), or if dropped onto itself.
+    func bundleTask(_ draggedTask: Task, onto targetTask: Task) throws {
+        guard draggedTask.id != targetTask.id else { return }
+        guard draggedTask.bundledTaskIDs.isEmpty else { return }
+
+        if targetTask.isBundle {
+            try addTaskToBundle(draggedTask, containerID: targetTask.id)
+        } else if let existingContainerID = targetTask.parentBundleID {
+            try addTaskToBundle(draggedTask, containerID: existingContainerID)
+        } else {
+            let container = Task(
+                title: "Bundle: \(targetTask.title)",
+                plan: targetTask.plan,
+                status: targetTask.status,
+                bundledTaskIDs: [targetTask.id, draggedTask.id]
+            )
+            try createTask(container)
+
+            var updatedTarget = targetTask
+            updatedTarget.parentBundleID = container.id
+            try updateTask(updatedTarget)
+
+            var updatedDragged = draggedTask
+            updatedDragged.parentBundleID = container.id
+            updatedDragged.plan = container.plan
+            updatedDragged.status = container.status
+            try updateTask(updatedDragged)
+        }
+    }
+
+    /// Adds `task` to the bundle container identified by `containerID`, syncing its plan/status
+    /// to match the container's.
+    private func addTaskToBundle(_ task: Task, containerID: UUID) throws {
+        guard var container = tasks.first(where: { $0.id == containerID }) else { return }
+
+        if !container.bundledTaskIDs.contains(task.id) {
+            container.bundledTaskIDs.append(task.id)
+            try updateTask(container)
+        }
+
+        var updatedTask = task
+        updatedTask.parentBundleID = containerID
+        updatedTask.plan = container.plan
+        updatedTask.status = container.status
+        try updateTask(updatedTask)
+    }
+
+    /// All tasks currently bundled inside `container`, in the order they were added.
+    func childTasks(of container: Task) -> [Task] {
+        container.bundledTaskIDs.compactMap { childID in
+            tasks.first(where: { $0.id == childID })
+        }
+    }
+
+    /// Removes `task` from its containing bundle, restoring it as a normal standalone card.
+    /// If the bundle would be left with only one task afterwards, the bundle automatically
+    /// dissolves: the last remaining task is also freed and the now-empty container is deleted.
+    /// No-ops if `task` isn't currently bundled.
+    func removeTaskFromBundle(_ task: Task) throws {
+        guard let containerID = task.parentBundleID,
+              var container = tasks.first(where: { $0.id == containerID }) else { return }
+
+        container.bundledTaskIDs.removeAll { $0 == task.id }
+
+        var freedTask = task
+        freedTask.parentBundleID = nil
+        try updateTask(freedTask)
+
+        if container.bundledTaskIDs.count <= 1 {
+            // Dissolve the bundle: free the last remaining child (if any) and delete the container.
+            if let lastChildID = container.bundledTaskIDs.first,
+               let lastChildIndex = tasks.firstIndex(where: { $0.id == lastChildID }) {
+                var lastChild = tasks[lastChildIndex]
+                lastChild.parentBundleID = nil
+                try updateTask(lastChild)
+            }
+            try deleteTask(container)
+        } else {
+            try updateTask(container)
+        }
+    }
+
+
     /// reverse a just-performed delete via `action`.
     private func offerUndo(message: String, action: @escaping () -> Void) {
         pendingUndoDismissWorkItem?.cancel()

@@ -21,6 +21,12 @@ extension Color {
         default: return .blue
         }
     }
+
+    /// Bright, fixed light-grey backdrop behind the Kanban board so the white/light task
+    /// columns and cards stand out with a bit of contrast. Deliberately a flat literal
+    /// (rather than a semantic system color) so it stays a consistent bright light-grey
+    /// regardless of appearance/accent settings.
+    static let taskToolBoardBackground = Color(white: 0.93)
 }
 
 extension Animation {
@@ -343,6 +349,8 @@ struct ContentView: View {
                 } else {
                     Text("Select a plan")
                         .foregroundColor(.secondary)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        .background(Color.taskToolBoardBackground)
                 }
             }
             .sheet(isPresented: $showingNewPlan) {
@@ -530,7 +538,9 @@ struct PlanDetailView: View {
     
     var planTasks: [Task] {
         guard let plan = plan else { return [] }
-        return taskStore.tasks.filter { $0.plan == plan.name }
+        // Tasks bundled inside another task are hidden here — only the bundle container
+        // card is shown on the board; children remain accessible via BundleDetailView.
+        return taskStore.tasks.filter { $0.plan == plan.name && $0.parentBundleID == nil }
     }
     
     var filteredPlanTasks: [Task] {
@@ -618,6 +628,9 @@ struct PlanDetailView: View {
                     }
                 }
             }
+            // Light-grey backdrop behind the board so the white/light Kanban columns and task
+            // cards stand out with more contrast, instead of blending into the window background.
+            .background(Color.taskToolBoardBackground)
             // Forces SwiftUI to treat this as a fresh view instance whenever the selected plan
             // changes, resetting `@State` (search text, multi-select) instead of carrying stale
             // selection/search state over from a previously-viewed plan.
@@ -775,8 +788,11 @@ struct KanbanColumn: View {
     let plan: Plan
     @Binding var selectedTaskIDs: Set<UUID>
     @State private var selectedTask: Task?
+    @State private var selectedBundle: Task?
     @State private var isTargeted = false
     @State private var showingNewTask = false
+    /// The task card a drag is currently hovering directly over, about to bundle with it.
+    @State private var bundleDropTargetID: UUID?
     @EnvironmentObject var taskStore: TaskStore
     
     var body: some View {
@@ -819,11 +835,14 @@ struct KanbanColumn: View {
             ScrollView {
                 VStack(spacing: 8) {
                     ForEach(tasks) { task in
+                        let bundleSize: Int = task.isBundle ? taskStore.childTasks(of: task).count : 0
                         TaskCard(
                             task: task,
                             isDone: isDoneColumn,
                             isSelected: selectedTaskIDs.contains(task.id),
                             hasActiveSelection: !selectedTaskIDs.isEmpty,
+                            bundleSize: bundleSize,
+                            isBundleDropTarget: bundleDropTargetID == task.id,
                             onToggleSelect: {
                                 if selectedTaskIDs.contains(task.id) {
                                     selectedTaskIDs.remove(task.id)
@@ -837,10 +856,20 @@ struct KanbanColumn: View {
                                 removal: .move(edge: .bottom).combined(with: .opacity)
                             ))
                             .onTapGesture {
-                                selectedTask = task
+                                if task.isBundle {
+                                    selectedBundle = task
+                                } else {
+                                    selectedTask = task
+                                }
                             }
                             .onDrag {
                                 NSItemProvider(object: task.id.uuidString as NSString)
+                            }
+                            // Dropping one card directly onto another bundles them together;
+                            // dropping in the column's empty space (handled by the column-level
+                            // `.onDrop` below) just moves the dragged task to this status.
+                            .onDrop(of: [.text], isTargeted: bundleDropBinding(for: task.id)) { providers in
+                                handleCardDrop(providers: providers, target: task)
                             }
                     }
                 }
@@ -863,6 +892,9 @@ struct KanbanColumn: View {
         }
         .sheet(item: $selectedTask) { task in
             TaskDetailView(task: task)
+        }
+        .sheet(item: $selectedBundle) { bundle in
+            BundleDetailView(bundle: bundle)
         }
         .sheet(isPresented: $showingNewTask) {
             NewTaskViewForStatus(plan: plan, statusName: statusName)
@@ -901,6 +933,48 @@ struct KanbanColumn: View {
         
         return true
     }
+    
+    /// Binding used by each card's `.onDrop(isTargeted:)` to track which single card (if any) a
+    /// drag is currently hovering over, so `TaskCard` can show its "about to bundle" highlight.
+    private func bundleDropBinding(for taskID: UUID) -> Binding<Bool> {
+        Binding(
+            get: { bundleDropTargetID == taskID },
+            set: { isTargeted in
+                if isTargeted {
+                    bundleDropTargetID = taskID
+                } else if bundleDropTargetID == taskID {
+                    bundleDropTargetID = nil
+                }
+            }
+        )
+    }
+
+    /// Handles a drop landing directly on `target`'s card — bundles the dragged task with
+    /// `target` (see `TaskStore.bundleTask`) instead of just moving it to this status.
+    private func handleCardDrop(providers: [NSItemProvider], target: Task) -> Bool {
+        bundleDropTargetID = nil
+        guard let provider = providers.first else { return false }
+
+        provider.loadItem(forTypeIdentifier: "public.text", options: nil) { item, error in
+            guard let data = item as? Data,
+                  let taskIdString = String(data: data, encoding: .utf8),
+                  let taskId = UUID(uuidString: taskIdString),
+                  taskId != target.id,
+                  let draggedTask = taskStore.tasks.first(where: { $0.id == taskId }) else {
+                return
+            }
+
+            DispatchQueue.main.async {
+                do {
+                    try taskStore.bundleTask(draggedTask, onto: target)
+                } catch {
+                    debugLog("❌ Failed to bundle '\(draggedTask.title)' onto '\(target.title)': \(error.localizedDescription)")
+                }
+            }
+        }
+
+        return true
+    }
 }
 
 struct TaskCard: View {
@@ -908,10 +982,61 @@ struct TaskCard: View {
     var isDone: Bool = false
     var isSelected: Bool = false
     var hasActiveSelection: Bool = false
+    /// Number of tasks contained in this card, when it's a bundle container. 0 for ordinary tasks.
+    var bundleSize: Int = 0
+    /// True while another task is being dragged directly over this card, about to bundle with it.
+    var isBundleDropTarget: Bool = false
     var onToggleSelect: (() -> Void)? = nil
     @State private var isHovered = false
 
     private enum DueUrgency { case overdue, today, tomorrow, upcoming }
+
+    // Matches markdown image references, e.g. "![alt](attachments/photo.png)", so the
+    // card preview can strip them out and show an icon/count instead of raw markdown.
+    private static let imageMarkdownRegex = try? NSRegularExpression(
+        pattern: #"!\[[^\]]*\]\([^\)]+\)"#
+    )
+
+    /// `task.body` with any markdown image references and subtask checklist lines
+    /// removed, and surrounding whitespace collapsed, for the plain-text preview
+    /// shown on the card (checklist lines get their own checkbox rendering instead).
+    private var bodyPreviewWithoutImages: String {
+        guard let regex = Self.imageMarkdownRegex else { return task.body }
+        let range = NSRange(task.body.startIndex..., in: task.body)
+        let stripped = regex.stringByReplacingMatches(in: task.body, range: range, withTemplate: "")
+        return stripped
+            .components(separatedBy: .newlines)
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.isEmpty && !$0.hasPrefix("- [ ]") && !$0.hasPrefix("- [x]") && !$0.hasPrefix("- [X]") }
+            .joined(separator: " ")
+    }
+
+    /// Number of images embedded in the task's body (markdown image references).
+    private var imageCount: Int {
+        guard let regex = Self.imageMarkdownRegex else { return 0 }
+        let range = NSRange(task.body.startIndex..., in: task.body)
+        return regex.numberOfMatches(in: task.body, range: range)
+    }
+
+    private struct CardSubtask {
+        let title: String
+        let isCompleted: Bool
+    }
+
+    /// Subtask checklist lines (`- [ ] ...` / `- [x] ...`) parsed out of the task body,
+    /// so the card can render them as checkboxes instead of raw markdown.
+    private var subtaskItems: [CardSubtask] {
+        task.body
+            .components(separatedBy: .newlines)
+            .compactMap { line -> CardSubtask? in
+                if line.hasPrefix("- [ ] ") {
+                    return CardSubtask(title: String(line.dropFirst(6)), isCompleted: false)
+                } else if line.hasPrefix("- [x] ") || line.hasPrefix("- [X] ") {
+                    return CardSubtask(title: String(line.dropFirst(6)), isCompleted: true)
+                }
+                return nil
+            }
+    }
 
     private var dueUrgency: DueUrgency {
         guard let dueDate = task.dueDate else { return .upcoming }
@@ -984,11 +1109,56 @@ struct TaskCard: View {
             Text(task.title)
                 .font(.headline)
 
-            if !task.body.isEmpty {
-                Text(task.body)
+            if task.isBundle {
+                HStack(spacing: 4) {
+                    Image(systemName: "square.stack.3d.up.fill")
+                        .font(.caption)
+                    Text("\(bundleSize) task\(bundleSize == 1 ? "" : "s") bundled")
+                        .font(.caption)
+                        .fontWeight(.medium)
+                }
+                .foregroundColor(.accentColor)
+            }
+
+            if !bodyPreviewWithoutImages.isEmpty {
+                Text(bodyPreviewWithoutImages)
                     .font(.caption)
                     .foregroundColor(.secondary)
                     .lineLimit(2)
+            }
+
+            if !subtaskItems.isEmpty {
+                VStack(alignment: .leading, spacing: 3) {
+                    ForEach(Array(subtaskItems.prefix(3).enumerated()), id: \.offset) { _, item in
+                        HStack(alignment: .top, spacing: 4) {
+                            Image(systemName: item.isCompleted ? "checkmark.square.fill" : "square")
+                                .font(.caption)
+                                .foregroundColor(item.isCompleted ? .accentColor : .secondary)
+                            Text(item.title)
+                                .font(.caption)
+                                .foregroundColor(item.isCompleted ? .secondary : .primary)
+                                .strikethrough(item.isCompleted, color: .secondary)
+                                .lineLimit(1)
+                        }
+                    }
+                    if subtaskItems.count > 3 {
+                        Text("+\(subtaskItems.count - 3) more")
+                            .font(.caption2)
+                            .foregroundColor(.secondary)
+                    }
+                }
+            }
+
+            if imageCount > 0 {
+                HStack(spacing: 4) {
+                    Image(systemName: "photo.fill")
+                        .font(.caption)
+                    if imageCount > 1 {
+                        Text("\(imageCount)")
+                            .font(.caption)
+                    }
+                }
+                .foregroundColor(.secondary)
             }
 
             if !task.tags.isEmpty {
@@ -1016,18 +1186,165 @@ struct TaskCard: View {
         }
         .padding()
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(cardBackground)
+        .background(isBundleDropTarget ? Color.accentColor.opacity(0.15) : cardBackground)
         .cornerRadius(6)
         .overlay(
             RoundedRectangle(cornerRadius: 6)
-                .stroke(isSelected ? Color.accentColor : Color.primary.opacity(0.12), lineWidth: isSelected ? 2 : 1)
+                .stroke(
+                    isBundleDropTarget ? Color.accentColor : (isSelected ? Color.accentColor : Color.primary.opacity(0.12)),
+                    lineWidth: isBundleDropTarget ? 3 : (isSelected ? 2 : 1)
+                )
         )
+        // Faint offset rectangles behind the card give a "stack of cards" look for bundles.
+        .background(
+            Group {
+                if task.isBundle {
+                    RoundedRectangle(cornerRadius: 6)
+                        .fill(cardBackground)
+                        .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.primary.opacity(0.12), lineWidth: 1))
+                        .offset(x: 6, y: 6)
+                        .opacity(0.6)
+                }
+            }
+        )
+        // A dragged card hovering directly over this one is about to bundle with it — show a
+        // "+" badge so the outcome of dropping is obvious.
+        .overlay(alignment: .center) {
+            if isBundleDropTarget {
+                Image(systemName: "plus.circle.fill")
+                    .font(.system(size: 32))
+                    .foregroundStyle(.white, Color.accentColor)
+                    .shadow(color: .black.opacity(0.25), radius: 3)
+                    .transition(.scale.combined(with: .opacity))
+            }
+        }
         .contentShape(Rectangle())
         .shadow(color: Color.black.opacity(isHovered ? 0.12 : 0.04), radius: isHovered ? 6 : 2, y: isHovered ? 3 : 1)
+        .animation(.taskToolQuickFeedback, value: isBundleDropTarget)
         .onHover { hovering in
             withAnimation(.taskToolQuickFeedback) {
                 isHovered = hovering
             }
+        }
+    }
+}
+
+/// Sheet shown when tapping a bundle container card. Lists the tasks bundled inside it, letting
+/// the user rename the bundle, open a child task individually, or un-bundle a task (which
+/// dissolves the whole bundle if only one task would remain — see `TaskStore.removeTaskFromBundle`).
+private struct BundleDetailView: View {
+    let bundle: Task
+    @Environment(\.dismiss) var dismiss
+    @EnvironmentObject var taskStore: TaskStore
+    @State private var title: String = ""
+    @State private var selectedChildTask: Task?
+    @FocusState private var isTitleFocused: Bool
+
+    /// Re-resolve the bundle from the live store so removals/renames reflect immediately.
+    private var liveBundle: Task {
+        taskStore.tasks.first(where: { $0.id == bundle.id }) ?? bundle
+    }
+
+    private var children: [Task] {
+        taskStore.childTasks(of: liveBundle)
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            HStack {
+                TextField("Bundle title", text: $title)
+                    .font(.title2)
+                    .fontWeight(.semibold)
+                    .textFieldStyle(.plain)
+                    .focused($isTitleFocused)
+                    .onSubmit { saveTitle() }
+                    .onChange(of: isTitleFocused) { _, focused in
+                        if !focused { saveTitle() }
+                    }
+
+                Spacer()
+
+                Button(action: { dismiss() }) {
+                    Image(systemName: "xmark.circle.fill")
+                        .foregroundColor(.secondary)
+                }
+                .buttonStyle(.plain)
+                .help("Close")
+            }
+
+            Text("\(children.count) task\(children.count == 1 ? "" : "s") bundled together")
+                .font(.caption)
+                .foregroundColor(.secondary)
+
+            Divider()
+
+            if children.isEmpty {
+                Text("No tasks in this bundle.")
+                    .foregroundColor(.secondary)
+            } else {
+                ScrollView {
+                    VStack(spacing: 8) {
+                        ForEach(children) { child in
+                            HStack {
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(child.title)
+                                        .font(.body)
+                                    if !child.tags.isEmpty {
+                                        Text(child.tags.joined(separator: ", "))
+                                            .font(.caption2)
+                                            .foregroundColor(.secondary)
+                                    }
+                                }
+                                .contentShape(Rectangle())
+                                .onTapGesture { selectedChildTask = child }
+
+                                Spacer()
+
+                                Button(action: { removeFromBundle(child) }) {
+                                    Image(systemName: "minus.circle")
+                                        .font(.caption)
+                                }
+                                .buttonStyle(.plain)
+                                .foregroundColor(.red)
+                                .help("Remove from Bundle")
+                            }
+                            .padding(8)
+                            .background(Color.primary.opacity(0.05))
+                            .cornerRadius(6)
+                        }
+                    }
+                }
+            }
+        }
+        .padding(24)
+        .frame(width: 420, height: 380)
+        .onAppear { title = bundle.title }
+        .sheet(item: $selectedChildTask) { child in
+            TaskDetailView(task: child)
+        }
+    }
+
+    private func saveTitle() {
+        let trimmed = title.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, trimmed != liveBundle.title else { return }
+        var updated = liveBundle
+        updated.title = trimmed
+        do {
+            try taskStore.updateTask(updated)
+        } catch {
+            debugLog("❌ Failed to rename bundle: \(error.localizedDescription)")
+        }
+    }
+
+    private func removeFromBundle(_ child: Task) {
+        do {
+            try taskStore.removeTaskFromBundle(child)
+            // If the bundle dissolved (only 1 task remained), close the now-gone container sheet.
+            if taskStore.tasks.first(where: { $0.id == bundle.id }) == nil {
+                dismiss()
+            }
+        } catch {
+            debugLog("❌ Failed to remove task from bundle: \(error.localizedDescription)")
         }
     }
 }
@@ -1185,7 +1502,7 @@ struct NewTaskView: View {
                         .foregroundStyle(.secondary)
                         .padding(.top, 3)
                     TextEditor(text: $taskBody, selection: $taskBodySelection)
-                        .frame(height: 100)
+                        .frame(height: 160)
                         .focused($descriptionFocused)
                         .overlay(
                             RoundedRectangle(cornerRadius: 5)
@@ -1261,7 +1578,7 @@ struct NewTaskView: View {
             )
         }
         .padding()
-        .frame(width: 500)
+        .frame(width: 640)
     }
 }
 
@@ -1301,7 +1618,7 @@ struct NewTaskViewForStatus: View {
                         .foregroundStyle(.secondary)
                         .padding(.top, 3)
                     TextEditor(text: $taskBody, selection: $taskBodySelection)
-                        .frame(height: 100)
+                        .frame(height: 160)
                         .focused($descriptionFocused)
                         .overlay(
                             RoundedRectangle(cornerRadius: 5)
@@ -1376,7 +1693,7 @@ struct NewTaskViewForStatus: View {
             )
         }
         .padding()
-        .frame(width: 500)
+        .frame(width: 640)
     }
 }
 
@@ -1404,6 +1721,10 @@ private struct TaskImagesSection: View {
     @State private var imageURL = ""
     @State private var isAddingImage = false
     @State private var isDropTargeted = false
+    // Buttons don't automatically become (or stay) first responder on macOS the way text
+    // fields do, so without an explicit focus grab here, ⌘V has no focused view to route
+    // to and silently does nothing even though `onPasteCommand` is attached below.
+    @FocusState private var isPasteBoxFocused: Bool
 
     // Captures the link target for any markdown image, whether it's a remote URL
     // (https://...) or a relative path to a locally-imported attachment.
@@ -1486,6 +1807,8 @@ private struct TaskImagesSection: View {
                 }
                 .buttonStyle(.plain)
                 .animation(.taskToolQuickFeedback, value: isDropTargeted)
+                .focusable()
+                .focused($isPasteBoxFocused)
                 .dropDestination(for: URL.self) { urls, _ in
                     handleImageDrop(urls)
                 } isTargeted: { targeted in
@@ -1494,6 +1817,10 @@ private struct TaskImagesSection: View {
                 .onPasteCommand(of: [.fileURL, .png, .jpeg, .gif, .tiff, .image]) { providers in
                     handlePastedImages(providers)
                 }
+                // Buttons don't automatically pick up keyboard focus when they appear, so
+                // ⌘V would otherwise have nothing focused to route to. Grabbing focus here
+                // (once, right as the box opens) makes the box immediately paste-ready.
+                .onAppear { isPasteBoxFocused = true }
 
                 HStack {
                     TextField("or paste an image URL: https://example.com/image.png", text: $imageURL)
@@ -1609,6 +1936,9 @@ private struct TaskImagesSection: View {
 /// Renders a single image thumbnail. Remote URLs load via `AsyncImage` (backed by
 /// `URLSession`); local attachment files use `NSImage(contentsOf:)` directly, since
 /// `URLSession` — and therefore `AsyncImage` — doesn't support the `file://` scheme.
+/// Clicking the thumbnail opens the image at full size in its own standalone window
+/// (not a `.sheet`) — a sheet presented from here would be nested inside the task
+/// detail sheet that's already showing and get visually clamped to its bounds.
 private struct ImageThumbnail: View {
     let url: URL
     let alt: String
@@ -1625,6 +1955,12 @@ private struct ImageThumbnail: View {
                         .frame(width: 120, height: 90)
                         .clipped()
                         .cornerRadius(6)
+                        .contentShape(Rectangle())
+                        .onTapGesture { ImagePreviewWindowController.show(nsImage: localImage, url: url, alt: alt) }
+                        .help("Click to view full size")
+                        .contextMenu {
+                            Button("Copy Image") { copyImageToClipboard(localImage) }
+                        }
                 } else if localLoadFailed {
                     failurePlaceholder
                 } else {
@@ -1643,6 +1979,12 @@ private struct ImageThumbnail: View {
                             .frame(width: 120, height: 90)
                             .clipped()
                             .cornerRadius(6)
+                            .contentShape(Rectangle())
+                            .onTapGesture { ImagePreviewWindowController.show(nsImage: nil, url: url, alt: alt) }
+                            .help("Click to view full size")
+                            .contextMenu {
+                                Button("Copy Image") { fetchAndCopyRemoteImageToClipboard(url: url) }
+                            }
                     case .failure:
                         failurePlaceholder
                     default:
@@ -1680,6 +2022,175 @@ private struct ImageThumbnail: View {
                 } else {
                     localLoadFailed = true
                 }
+            }
+        }
+    }
+}
+
+/// Writes an image to the general pasteboard. Shared by `ImageThumbnail` and
+/// `FullSizeImageContent` so "Copy Image" behaves the same from the thumbnail grid
+/// and the full-size preview window.
+private func copyImageToClipboard(_ image: NSImage) {
+    let pasteboard = NSPasteboard.general
+    pasteboard.clearContents()
+    pasteboard.writeObjects([image])
+}
+
+/// Fetches a remote image's bytes and writes the result to the general pasteboard.
+private func fetchAndCopyRemoteImageToClipboard(url: URL) {
+    URLSession.shared.dataTask(with: url) { data, _, _ in
+        guard let data, let image = NSImage(data: data) else { return }
+        DispatchQueue.main.async {
+            copyImageToClipboard(image)
+        }
+    }.resume()
+}
+
+/// Manages a standalone `NSWindow` that shows a single attached image at full size.
+/// Deliberately a plain AppKit window rather than a SwiftUI `.sheet`: presenting a
+/// sheet from `ImageThumbnail` would nest it inside the task detail sheet it's shown
+/// from, visually clamping the image preview to that sheet's bounds instead of letting
+/// it size itself to the image (or the screen, for very large images).
+@MainActor
+private final class ImagePreviewWindowController: NSObject, NSWindowDelegate {
+    /// Keeps controllers (and thus their windows) alive while open; `NSWindow` itself
+    /// doesn't retain its delegate, so without this the controller — and the window's
+    /// close handling — would be deallocated immediately after `show` returns.
+    private static var openControllers: [ImagePreviewWindowController] = []
+    private var window: NSWindow?
+
+    static func show(nsImage: NSImage?, url: URL, alt: String) {
+        let controller = ImagePreviewWindowController()
+        controller.open(nsImage: nsImage, url: url, alt: alt)
+        openControllers.append(controller)
+    }
+
+    private func open(nsImage: NSImage?, url: URL, alt: String) {
+        let content = FullSizeImageContent(url: url, alt: alt, localImage: nsImage)
+        let hosting = NSHostingController(rootView: content)
+        // By default, `NSHostingController` auto-resizes its window to fit the SwiftUI
+        // view's ideal/intrinsic size as soon as it's assigned as `contentViewController`,
+        // which overrides the explicit size computed below and is why the window always
+        // snapped down to a small size regardless of the image's real dimensions.
+        hosting.sizingOptions = []
+
+        let screenSize = NSScreen.main?.visibleFrame.size ?? CGSize(width: 1200, height: 800)
+        let maxSize = CGSize(width: screenSize.width * 0.85, height: screenSize.height * 0.85)
+        // Use the bitmap's actual pixel dimensions rather than `nsImage.size` (which is
+        // a point size derived from any embedded DPI metadata). Pasted/screenshot images
+        // are often tagged at a high DPI, making `.size` much smaller than their real
+        // resolution and causing the window to open far tinier than the image's true
+        // "original size". Sizing the window from pixel dimensions (1 point per pixel)
+        // matches how apps like Preview open images by default.
+        var size = Self.pixelSize(of: nsImage) ?? CGSize(width: 900, height: 650)
+        if size.width > maxSize.width || size.height > maxSize.height {
+            let scale = min(maxSize.width / size.width, maxSize.height / size.height)
+            size = CGSize(width: size.width * scale, height: size.height * scale)
+        }
+        size.width = max(size.width, 320)
+        size.height = max(size.height, 240)
+
+        let window = NSWindow(
+            contentRect: NSRect(origin: .zero, size: size),
+            styleMask: [.titled, .closable, .resizable, .miniaturizable],
+            backing: .buffered,
+            defer: false
+        )
+        window.title = alt.isEmpty ? "Image" : alt
+        window.contentViewController = hosting
+        // Re-assert the computed size in case assigning the content view controller
+        // nudged the frame; `setContentSize` resizes around the window's current
+        // top-left, so re-center afterwards.
+        window.setContentSize(size)
+        window.center()
+        // The window would otherwise be deallocated as soon as it closes, before this
+        // controller's `windowWillClose` delegate callback has a chance to remove it
+        // from `openControllers`.
+        window.isReleasedWhenClosed = false
+        window.delegate = self
+        window.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
+        self.window = window
+    }
+
+    func windowWillClose(_ notification: Notification) {
+        Self.openControllers.removeAll { $0 === self }
+    }
+
+    /// Returns the image's true pixel dimensions (from its bitmap representation),
+    /// as opposed to `NSImage.size`, which is a point size that can be skewed by
+    /// embedded DPI metadata on screenshots/pasted images.
+    private static func pixelSize(of image: NSImage?) -> CGSize? {
+        guard let rep = image?.representations.first else { return nil }
+        let width = rep.pixelsWide
+        let height = rep.pixelsHigh
+        guard width > 0, height > 0 else { return nil }
+        return CGSize(width: width, height: height)
+    }
+}
+
+/// Content shown inside the standalone image-preview window. Reuses the same
+/// local-vs-remote loading logic as `ImageThumbnail`, just without the fixed
+/// thumbnail-sized frame.
+private struct FullSizeImageContent: View {
+    let url: URL
+    let alt: String
+    /// Already-loaded local image, if any, to avoid a second disk read for file:// URLs.
+    let localImage: NSImage?
+
+    var body: some View {
+        Group {
+            if let localImage {
+                Image(nsImage: localImage)
+                    .resizable()
+                    .scaledToFit()
+                    .contextMenu {
+                        Button("Copy Image") { copyImageToClipboard(localImage) }
+                    }
+            } else if url.isFileURL {
+                // Shouldn't normally happen (the thumbnail already loaded it before this
+                // window can open), but handle it defensively just in case.
+                AsyncLocalImage(url: url)
+            } else {
+                AsyncImage(url: url) { phase in
+                    switch phase {
+                    case .success(let img):
+                        img.resizable().scaledToFit()
+                            .contextMenu {
+                                Button("Copy Image") { fetchAndCopyRemoteImageToClipboard(url: url) }
+                            }
+                    case .failure:
+                        Image(systemName: "photo.badge.exclamationmark")
+                            .font(.system(size: 48))
+                            .foregroundColor(.secondary)
+                    default:
+                        ProgressView()
+                    }
+                }
+            }
+        }
+        .frame(minWidth: 320, minHeight: 240)
+    }
+}
+
+/// Fallback loader for local file:// images inside `FullSizeImageContent` when no
+/// already-loaded `NSImage` was passed in.
+private struct AsyncLocalImage: View {
+    let url: URL
+    @State private var image: NSImage?
+
+    var body: some View {
+        Group {
+            if let image {
+                Image(nsImage: image).resizable().scaledToFit()
+                    .contextMenu {
+                        Button("Copy Image") { copyImageToClipboard(image) }
+                    }
+            } else {
+                ProgressView()
+                    .task {
+                        image = NSImage(contentsOf: url)
+                    }
             }
         }
     }
@@ -1759,6 +2270,18 @@ struct TaskDetailView: View {
                     .fontWeight(.semibold)
                 
                 Spacer()
+                
+                // Explicit close button mirroring the "Save" footer button (same
+                // `saveAndClose()` action, same Cmd+S shortcut) so users can quickly
+                // close a task from the top-right without scrolling to the footer.
+                Button(action: { saveAndClose() }) {
+                    Image(systemName: "xmark.circle.fill")
+                        .font(.title2)
+                        .foregroundColor(.secondary)
+                }
+                .buttonStyle(.plain)
+                .disabled(editedTask.title.isEmpty)
+                .help("Save and close")
             }
             .padding()
             .background(Color(nsColor: .controlBackgroundColor))
@@ -2013,7 +2536,7 @@ struct TaskDetailView: View {
             .padding()
             .background(Color(nsColor: .controlBackgroundColor))
         }
-        .frame(width: 600, height: 700)
+        .frame(width: 640, height: 700)
         .onSubmit {
             if !editedTask.title.isEmpty {
                 saveAndClose()

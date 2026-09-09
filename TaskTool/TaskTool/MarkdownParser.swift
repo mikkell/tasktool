@@ -31,6 +31,8 @@ struct MarkdownParser {
         let id = metadata["id"] as? String ?? UUID().uuidString
         let status = metadata["status"] as? String ?? "To Do"
         let tags = metadata["tags"] as? [String] ?? []
+        let bundledTaskIDs = (metadata["bundled_task_ids"] as? [String] ?? []).compactMap { UUID(uuidString: $0) }
+        let parentBundleID = (metadata["parent_bundle_id"] as? String).flatMap { UUID(uuidString: $0) }
         
         let dateFormatter = iso8601Formatter
         // Yams may parse ISO8601 timestamps as native Date objects rather than Strings.
@@ -58,7 +60,9 @@ struct MarkdownParser {
             tags: tags,
             created: created,
             updated: updated,
-            body: body
+            body: body,
+            bundledTaskIDs: bundledTaskIDs,
+            parentBundleID: parentBundleID
         )
     }
     
@@ -82,6 +86,17 @@ struct MarkdownParser {
             for tag in task.tags {
                 frontmatter += "\n  - \(tag)"
             }
+        }
+        
+        if !task.bundledTaskIDs.isEmpty {
+            frontmatter += "\nbundled_task_ids:"
+            for bundledID in task.bundledTaskIDs {
+                frontmatter += "\n  - \(bundledID.uuidString)"
+            }
+        }
+        
+        if let parentBundleID = task.parentBundleID {
+            frontmatter += "\nparent_bundle_id: \(parentBundleID.uuidString)"
         }
         
         frontmatter += """

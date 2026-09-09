@@ -17,7 +17,17 @@ struct Task: Identifiable, Codable, Hashable {
     var created: Date
     var updated: Date
     var body: String
-    
+    /// IDs of tasks bundled inside this task, when this task acts as a bundle "container" card
+    /// created by drag-dropping one task onto another. Empty for ordinary, non-bundle tasks.
+    var bundledTaskIDs: [UUID]
+    /// The bundle container task's ID, if this task currently lives inside a bundle. Bundled
+    /// tasks are hidden from the Kanban board (only their container card is shown) and share
+    /// the container's `plan`/`status` — see `TaskStore.bundleTask(_:onto:)`.
+    var parentBundleID: UUID?
+
+    /// True when this task is a bundle container (holds one or more other tasks).
+    var isBundle: Bool { !bundledTaskIDs.isEmpty }
+
     init(
         id: UUID = UUID(),
         title: String,
@@ -27,7 +37,9 @@ struct Task: Identifiable, Codable, Hashable {
         tags: [String] = [],
         created: Date = Date(),
         updated: Date = Date(),
-        body: String = ""
+        body: String = "",
+        bundledTaskIDs: [UUID] = [],
+        parentBundleID: UUID? = nil
     ) {
         self.id = id
         self.title = title
@@ -38,6 +50,8 @@ struct Task: Identifiable, Codable, Hashable {
         self.created = created
         self.updated = updated
         self.body = body
+        self.bundledTaskIDs = bundledTaskIDs
+        self.parentBundleID = parentBundleID
     }
     
     // Precompiled once and reused across all `fileName` computations — NSRegularExpression

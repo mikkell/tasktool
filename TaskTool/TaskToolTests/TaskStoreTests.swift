@@ -739,6 +739,145 @@ final class TaskStoreTests: XCTestCase {
         XCTAssertEqual(contents.count, 2)
     }
 
+    // MARK: - Bundling
+
+    func testBundleTaskCreatesContainerWithBothTasks() throws {
+        let plan = Plan(name: "Work", color: "blue")
+        try taskStore.createPlan(plan)
+        let target = Task(title: "Target", plan: "Work", status: "In Progress")
+        let dragged = Task(title: "Dragged", plan: "Work", status: "To Do")
+        try taskStore.createTask(target)
+        try taskStore.createTask(dragged)
+
+        try taskStore.bundleTask(dragged, onto: target)
+
+        let container = try XCTUnwrap(taskStore.tasks.first { $0.isBundle })
+        XCTAssertEqual(container.title, "Bundle: Target")
+        XCTAssertEqual(container.plan, "Work")
+        XCTAssertEqual(container.status, "In Progress")
+        XCTAssertEqual(Set(container.bundledTaskIDs), Set([target.id, dragged.id]))
+
+        let updatedTarget = try XCTUnwrap(taskStore.tasks.first { $0.id == target.id })
+        let updatedDragged = try XCTUnwrap(taskStore.tasks.first { $0.id == dragged.id })
+        XCTAssertEqual(updatedTarget.parentBundleID, container.id)
+        XCTAssertEqual(updatedDragged.parentBundleID, container.id)
+        // Dragged task's status/plan are synced to match the container/target.
+        XCTAssertEqual(updatedDragged.status, "In Progress")
+    }
+
+    func testBundleTaskAddsThirdTaskToExistingBundle() throws {
+        let plan = Plan(name: "Work", color: "blue")
+        try taskStore.createPlan(plan)
+        let target = Task(title: "Target", plan: "Work", status: "To Do")
+        let dragged = Task(title: "Dragged", plan: "Work", status: "To Do")
+        let third = Task(title: "Third", plan: "Work", status: "Done")
+        try taskStore.createTask(target)
+        try taskStore.createTask(dragged)
+        try taskStore.createTask(third)
+
+        try taskStore.bundleTask(dragged, onto: target)
+        let container = try XCTUnwrap(taskStore.tasks.first { $0.isBundle })
+
+        try taskStore.bundleTask(third, onto: container)
+
+        let refreshedContainer = try XCTUnwrap(taskStore.tasks.first { $0.id == container.id })
+        XCTAssertEqual(Set(refreshedContainer.bundledTaskIDs), Set([target.id, dragged.id, third.id]))
+        let updatedThird = try XCTUnwrap(taskStore.tasks.first { $0.id == third.id })
+        XCTAssertEqual(updatedThird.parentBundleID, container.id)
+        XCTAssertEqual(updatedThird.status, "To Do")
+    }
+
+    func testBundleTaskNoOpsOnSelfDrop() throws {
+        let plan = Plan(name: "Work", color: "blue")
+        try taskStore.createPlan(plan)
+        let task = Task(title: "Solo", plan: "Work", status: "To Do")
+        try taskStore.createTask(task)
+
+        try taskStore.bundleTask(task, onto: task)
+
+        XCTAssertEqual(taskStore.tasks.count, 1)
+        XCTAssertFalse(taskStore.tasks[0].isBundle)
+    }
+
+    func testBundleTaskNoOpsWhenDraggingABundleContainer() throws {
+        let plan = Plan(name: "Work", color: "blue")
+        try taskStore.createPlan(plan)
+        let target = Task(title: "Target", plan: "Work", status: "To Do")
+        let dragged = Task(title: "Dragged", plan: "Work", status: "To Do")
+        try taskStore.createTask(target)
+        try taskStore.createTask(dragged)
+        try taskStore.bundleTask(dragged, onto: target)
+        let bundleContainer = try XCTUnwrap(taskStore.tasks.first { $0.isBundle })
+
+        let other = Task(title: "Other", plan: "Work", status: "To Do")
+        try taskStore.createTask(other)
+
+        // Dragging the bundle container itself onto another task should no-op (nesting isn't supported).
+        try taskStore.bundleTask(bundleContainer, onto: other)
+
+        let refreshedOther = try XCTUnwrap(taskStore.tasks.first { $0.id == other.id })
+        XCTAssertFalse(refreshedOther.isBundle)
+        XCTAssertNil(refreshedOther.parentBundleID)
+    }
+
+    func testChildTasksReturnsBundledTasksInOrder() throws {
+        let plan = Plan(name: "Work", color: "blue")
+        try taskStore.createPlan(plan)
+        let target = Task(title: "Target", plan: "Work", status: "To Do")
+        let dragged = Task(title: "Dragged", plan: "Work", status: "To Do")
+        try taskStore.createTask(target)
+        try taskStore.createTask(dragged)
+        try taskStore.bundleTask(dragged, onto: target)
+        let container = try XCTUnwrap(taskStore.tasks.first { $0.isBundle })
+
+        let children = taskStore.childTasks(of: container)
+
+        XCTAssertEqual(children.map(\.id), [target.id, dragged.id])
+    }
+
+    func testRemoveTaskFromBundleKeepsBundleWithThreeOrMoreRemaining() throws {
+        let plan = Plan(name: "Work", color: "blue")
+        try taskStore.createPlan(plan)
+        let a = Task(title: "A", plan: "Work", status: "To Do")
+        let b = Task(title: "B", plan: "Work", status: "To Do")
+        let c = Task(title: "C", plan: "Work", status: "To Do")
+        try taskStore.createTask(a)
+        try taskStore.createTask(b)
+        try taskStore.createTask(c)
+        try taskStore.bundleTask(b, onto: a)
+        var container = try XCTUnwrap(taskStore.tasks.first { $0.isBundle })
+        try taskStore.bundleTask(c, onto: container)
+        container = try XCTUnwrap(taskStore.tasks.first { $0.id == container.id })
+
+        let bAfterBundle = try XCTUnwrap(taskStore.tasks.first { $0.id == b.id })
+        try taskStore.removeTaskFromBundle(bAfterBundle)
+
+        let refreshedContainer = try XCTUnwrap(taskStore.tasks.first { $0.id == container.id })
+        XCTAssertEqual(Set(refreshedContainer.bundledTaskIDs), Set([a.id, c.id]))
+        let freedB = try XCTUnwrap(taskStore.tasks.first { $0.id == b.id })
+        XCTAssertNil(freedB.parentBundleID)
+    }
+
+    func testRemoveTaskFromBundleDissolvesBundleWhenOneTaskRemains() throws {
+        let plan = Plan(name: "Work", color: "blue")
+        try taskStore.createPlan(plan)
+        let target = Task(title: "Target", plan: "Work", status: "To Do")
+        let dragged = Task(title: "Dragged", plan: "Work", status: "To Do")
+        try taskStore.createTask(target)
+        try taskStore.createTask(dragged)
+        try taskStore.bundleTask(dragged, onto: target)
+        let container = try XCTUnwrap(taskStore.tasks.first { $0.isBundle })
+
+        let refreshedDragged = try XCTUnwrap(taskStore.tasks.first { $0.id == dragged.id })
+        try taskStore.removeTaskFromBundle(refreshedDragged)
+
+        // Bundle should have dissolved: container gone, last remaining task freed.
+        XCTAssertNil(taskStore.tasks.first { $0.id == container.id })
+        let freedTarget = try XCTUnwrap(taskStore.tasks.first { $0.id == target.id })
+        XCTAssertNil(freedTarget.parentBundleID)
+        XCTAssertFalse(freedTarget.isBundle)
+    }
+
     // MARK: - Persistence / loadAllData
 
     func testLoadAllDataLoadsSavedPlans() throws {
