@@ -24,6 +24,12 @@ struct Task: Identifiable, Codable, Hashable {
     /// tasks are hidden from the Kanban board (only their container card is shown) and share
     /// the container's `plan`/`status` — see `TaskStore.bundleTask(_:onto:)`.
     var parentBundleID: UUID?
+    /// Manual sort position within this task's plan/status column, lowest first. Defaults to 0
+    /// for tasks that haven't been explicitly reordered yet — ties are broken by array order
+    /// (stable sort), which for newly created tasks means "most recently added last". Only
+    /// tasks within the same plan/status are compared against each other; see
+    /// `TaskStore.reorderTask(_:before:)`.
+    var order: Int
 
     /// True when this task is a bundle container (holds one or more other tasks).
     var isBundle: Bool { !bundledTaskIDs.isEmpty }
@@ -39,7 +45,8 @@ struct Task: Identifiable, Codable, Hashable {
         updated: Date = Date(),
         body: String = "",
         bundledTaskIDs: [UUID] = [],
-        parentBundleID: UUID? = nil
+        parentBundleID: UUID? = nil,
+        order: Int = 0
     ) {
         self.id = id
         self.title = title
@@ -52,6 +59,7 @@ struct Task: Identifiable, Codable, Hashable {
         self.body = body
         self.bundledTaskIDs = bundledTaskIDs
         self.parentBundleID = parentBundleID
+        self.order = order
     }
     
     // Precompiled once and reused across all `fileName` computations — NSRegularExpression

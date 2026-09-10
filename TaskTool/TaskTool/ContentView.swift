@@ -554,9 +554,11 @@ struct PlanDetailView: View {
     }
     
     /// Tasks grouped by status name, computed once per render instead of re-filtering
-    /// `filteredPlanTasks` from scratch for every Kanban column.
+    /// `filteredPlanTasks` from scratch for every Kanban column. Each group is sorted by the
+    /// task's manual `order`, so drag-to-reorder positions are reflected on the board.
     var tasksGroupedByStatus: [String: [Task]] {
         Dictionary(grouping: filteredPlanTasks, by: { $0.status })
+            .mapValues { $0.sorted { $0.order < $1.order } }
     }
 
     func tasks(for status: Plan.TaskStatus) -> [Task] {
@@ -791,9 +793,21 @@ struct KanbanColumn: View {
     @State private var selectedBundle: Task?
     @State private var isTargeted = false
     @State private var showingNewTask = false
-    /// The task card a drag is currently hovering directly over, about to bundle with it.
+    /// The task card a drag is currently hovering directly over. Set immediately when the drag
+    /// enters the card, and cleared on exit/drop — used only to show the (lighter) "drop here to
+    /// reorder" highlight. Bundling itself is a separate, delayed state; see `bundleDropTargetID`.
+    @State private var hoveredCardID: UUID?
+    /// The task card a drag has hovered continuously over for `bundleActivationDelay` — i.e.
+    /// bundling is now "armed" and dropping here will bundle instead of reorder.
     @State private var bundleDropTargetID: UUID?
+    /// Pending timers that arm bundling after a sustained hover, keyed by the card being
+    /// hovered. Cancelled on hover-exit or drop so a quick pass-over never arms bundling.
+    @State private var bundleArmWorkItems: [UUID: DispatchWorkItem] = [:]
     @EnvironmentObject var taskStore: TaskStore
+
+    /// How long a drag must hover continuously over a card before dropping on it bundles the
+    /// two tasks together, rather than just reordering the dragged task to that position.
+    private static let bundleActivationDelay: TimeInterval = 3.0
     
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -836,13 +850,16 @@ struct KanbanColumn: View {
                 VStack(spacing: 8) {
                     ForEach(tasks) { task in
                         let bundleSize: Int = task.isBundle ? taskStore.childTasks(of: task).count : 0
+                        let isArmedForBundle = bundleDropTargetID == task.id
+                        let isReorderTarget = hoveredCardID == task.id && !isArmedForBundle
                         TaskCard(
                             task: task,
                             isDone: isDoneColumn,
                             isSelected: selectedTaskIDs.contains(task.id),
                             hasActiveSelection: !selectedTaskIDs.isEmpty,
                             bundleSize: bundleSize,
-                            isBundleDropTarget: bundleDropTargetID == task.id,
+                            isBundleDropTarget: isArmedForBundle,
+                            isReorderDropTarget: isReorderTarget,
                             onToggleSelect: {
                                 if selectedTaskIDs.contains(task.id) {
                                     selectedTaskIDs.remove(task.id)
@@ -865,10 +882,13 @@ struct KanbanColumn: View {
                             .onDrag {
                                 NSItemProvider(object: task.id.uuidString as NSString)
                             }
-                            // Dropping one card directly onto another bundles them together;
-                            // dropping in the column's empty space (handled by the column-level
-                            // `.onDrop` below) just moves the dragged task to this status.
-                            .onDrop(of: [.text], isTargeted: bundleDropBinding(for: task.id)) { providers in
+                            // Dropping one card directly onto another normally reorders the
+                            // dragged task to sit right before the target; only a sustained
+                            // (bundleActivationDelay-second) hover before dropping "arms"
+                            // bundling instead. Dropping in the column's empty space (handled
+                            // by the column-level `.onDrop` below) just moves the dragged task
+                            // to the end of this status, unchanged.
+                            .onDrop(of: [.text], isTargeted: cardHoverBinding(for: task.id)) { providers in
                                 handleCardDrop(providers: providers, target: task)
                             }
                     }
@@ -912,21 +932,32 @@ struct KanbanColumn: View {
             }
             
             DispatchQueue.main.async {
-                if let taskIndex = taskStore.tasks.firstIndex(where: { $0.id == taskId }) {
-                    var task = taskStore.tasks[taskIndex]
-                    
-                    // Only update if status changed
-                    if task.status != statusName {
-                        let originalTask = task
-                        task.status = statusName
-                        do {
-                            try taskStore.updateTask(task)
-                        } catch {
-                            // Revert in-memory state so the UI stays consistent with disk
-                            taskStore.tasks[taskIndex] = originalTask
-                            debugLog("❌ Failed to update status for '\(task.title)': \(error.localizedDescription)")
-                        }
-                    }
+                guard let taskIndex = taskStore.tasks.firstIndex(where: { $0.id == taskId }) else { return }
+                var task = taskStore.tasks[taskIndex]
+                let originalTask = task
+
+                // The `order` value that lands the task at the end of this column, ignoring
+                // its own current entry (so a task already sitting last here computes back to
+                // its own order and correctly counts as a no-op below).
+                let endOrder = (taskStore.tasks
+                    .filter { $0.plan == plan.name && $0.status == statusName && $0.parentBundleID == nil && $0.id != taskId }
+                    .map(\.order)
+                    .max() ?? -1) + 1
+
+                // Dropping into the column's empty space always moves the task to the end of
+                // this status — whether it's arriving from a different column/plan, or was
+                // already here and is simply being dragged down to reorder it to the bottom
+                // (previously a no-op, since only a status *change* triggered an update).
+                guard task.status != statusName || task.order != endOrder else { return }
+
+                task.status = statusName
+                task.order = endOrder
+                do {
+                    try taskStore.updateTask(task)
+                } catch {
+                    // Revert in-memory state so the UI stays consistent with disk
+                    taskStore.tasks[taskIndex] = originalTask
+                    debugLog("❌ Failed to update status for '\(task.title)': \(error.localizedDescription)")
                 }
             }
         }
@@ -934,25 +965,55 @@ struct KanbanColumn: View {
         return true
     }
     
-    /// Binding used by each card's `.onDrop(isTargeted:)` to track which single card (if any) a
-    /// drag is currently hovering over, so `TaskCard` can show its "about to bundle" highlight.
-    private func bundleDropBinding(for taskID: UUID) -> Binding<Bool> {
+    /// Binding used by each card's `.onDrop(isTargeted:)` to track raw hover state. Setting it
+    /// to `true` records the immediate hover (for the lighter "reorder here" highlight) and
+    /// schedules a delayed timer that arms bundling after `bundleActivationDelay` seconds of
+    /// continuous hover; setting it to `false` (hover exited) cancels that timer so a quick
+    /// pass-over never arms bundling.
+    private func cardHoverBinding(for taskID: UUID) -> Binding<Bool> {
         Binding(
-            get: { bundleDropTargetID == taskID },
+            get: { hoveredCardID == taskID },
             set: { isTargeted in
                 if isTargeted {
-                    bundleDropTargetID = taskID
-                } else if bundleDropTargetID == taskID {
-                    bundleDropTargetID = nil
+                    hoveredCardID = taskID
+                    scheduleBundleArm(for: taskID)
+                } else {
+                    if hoveredCardID == taskID { hoveredCardID = nil }
+                    cancelBundleArm(for: taskID)
                 }
             }
         )
     }
 
-    /// Handles a drop landing directly on `target`'s card — bundles the dragged task with
-    /// `target` (see `TaskStore.bundleTask`) instead of just moving it to this status.
+    /// Schedules bundling to "arm" for `taskID` after `bundleActivationDelay` seconds of
+    /// continuous hover. Replaces (cancels) any timer already pending for this card.
+    private func scheduleBundleArm(for taskID: UUID) {
+        bundleArmWorkItems[taskID]?.cancel()
+        let workItem = DispatchWorkItem {
+            bundleDropTargetID = taskID
+        }
+        bundleArmWorkItems[taskID] = workItem
+        DispatchQueue.main.asyncAfter(deadline: .now() + Self.bundleActivationDelay, execute: workItem)
+    }
+
+    /// Cancels any pending bundle-arm timer for `taskID` and clears its armed state if set.
+    private func cancelBundleArm(for taskID: UUID) {
+        bundleArmWorkItems[taskID]?.cancel()
+        bundleArmWorkItems[taskID] = nil
+        if bundleDropTargetID == taskID {
+            bundleDropTargetID = nil
+        }
+    }
+
+    /// Handles a drop landing directly on `target`'s card. If bundling had already "armed" for
+    /// this card (a sustained `bundleActivationDelay`-second hover elapsed before the drop),
+    /// bundles the dragged task with `target` (see `TaskStore.bundleTask`). Otherwise — a quick
+    /// drop before that timer fired — reorders the dragged task to sit right before `target`
+    /// instead (see `TaskStore.reorderTask(_:before:)`).
     private func handleCardDrop(providers: [NSItemProvider], target: Task) -> Bool {
-        bundleDropTargetID = nil
+        let wasArmedForBundle = bundleDropTargetID == target.id
+        hoveredCardID = nil
+        cancelBundleArm(for: target.id)
         guard let provider = providers.first else { return false }
 
         provider.loadItem(forTypeIdentifier: "public.text", options: nil) { item, error in
@@ -966,9 +1027,14 @@ struct KanbanColumn: View {
 
             DispatchQueue.main.async {
                 do {
-                    try taskStore.bundleTask(draggedTask, onto: target)
+                    if wasArmedForBundle {
+                        try taskStore.bundleTask(draggedTask, onto: target)
+                    } else {
+                        try taskStore.reorderTask(draggedTask, before: target)
+                    }
                 } catch {
-                    debugLog("❌ Failed to bundle '\(draggedTask.title)' onto '\(target.title)': \(error.localizedDescription)")
+                    let action = wasArmedForBundle ? "bundle" : "reorder"
+                    debugLog("❌ Failed to \(action) '\(draggedTask.title)' onto '\(target.title)': \(error.localizedDescription)")
                 }
             }
         }
@@ -984,8 +1050,12 @@ struct TaskCard: View {
     var hasActiveSelection: Bool = false
     /// Number of tasks contained in this card, when it's a bundle container. 0 for ordinary tasks.
     var bundleSize: Int = 0
-    /// True while another task is being dragged directly over this card, about to bundle with it.
+    /// True once another task has been dragged over this card continuously long enough for
+    /// bundling to "arm" — dropping now bundles the two tasks together (shows a "+" badge).
     var isBundleDropTarget: Bool = false
+    /// True while another task is hovering over this card but bundling hasn't armed yet —
+    /// dropping now would reorder the dragged task to sit just before this one.
+    var isReorderDropTarget: Bool = false
     var onToggleSelect: (() -> Void)? = nil
     @State private var isHovered = false
 
@@ -1186,13 +1256,13 @@ struct TaskCard: View {
         }
         .padding()
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(isBundleDropTarget ? Color.accentColor.opacity(0.15) : cardBackground)
+        .background(isBundleDropTarget ? Color.accentColor.opacity(0.15) : (isReorderDropTarget ? Color.accentColor.opacity(0.06) : cardBackground))
         .cornerRadius(6)
         .overlay(
             RoundedRectangle(cornerRadius: 6)
                 .stroke(
-                    isBundleDropTarget ? Color.accentColor : (isSelected ? Color.accentColor : Color.primary.opacity(0.12)),
-                    lineWidth: isBundleDropTarget ? 3 : (isSelected ? 2 : 1)
+                    isBundleDropTarget ? Color.accentColor : (isReorderDropTarget ? Color.accentColor.opacity(0.5) : (isSelected ? Color.accentColor : Color.primary.opacity(0.12))),
+                    lineWidth: isBundleDropTarget ? 3 : (isReorderDropTarget ? 2 : (isSelected ? 2 : 1))
                 )
         )
         // Faint offset rectangles behind the card give a "stack of cards" look for bundles.
@@ -1218,9 +1288,26 @@ struct TaskCard: View {
                     .transition(.scale.combined(with: .opacity))
             }
         }
+        // Before bundling arms, a dragged card hovering here would just reorder to this spot —
+        // a subtle top indicator line instead of the "+" badge makes that outcome clear too.
+        .overlay(alignment: .top) {
+            if isReorderDropTarget {
+                Rectangle()
+                    .fill(Color.accentColor)
+                    .frame(height: 3)
+                    .cornerRadius(1.5)
+                    .padding(.horizontal, 6)
+                    .transition(.opacity)
+            }
+        }
+        // Growing real top padding (not just a cosmetic offset) actually pushes this card —
+        // and everything below it in the column — down within the list, opening a visible gap
+        // right above it so it's obvious that's where the dragged card will land if dropped now.
+        .padding(.top, isReorderDropTarget ? 14 : 0)
         .contentShape(Rectangle())
         .shadow(color: Color.black.opacity(isHovered ? 0.12 : 0.04), radius: isHovered ? 6 : 2, y: isHovered ? 3 : 1)
         .animation(.taskToolQuickFeedback, value: isBundleDropTarget)
+        .animation(.taskToolQuickFeedback, value: isReorderDropTarget)
         .onHover { hovering in
             withAnimation(.taskToolQuickFeedback) {
                 isHovered = hovering

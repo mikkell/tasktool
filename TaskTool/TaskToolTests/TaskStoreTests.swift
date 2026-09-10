@@ -1098,5 +1098,95 @@ final class TaskStoreTests: XCTestCase {
         XCTAssertEqual(onDisk?.statuses.count, 4)
         XCTAssertEqual(onDisk?.statuses.map { $0.name }.sorted(), ["Doing", "Done", "Review", "Todo"])
     }
+
+    // MARK: - Reordering (drag-to-reorder within/across columns)
+
+    func testReorderTaskMovesDraggedTaskBeforeTargetWithinSameColumn() throws {
+        try taskStore.createPlan(Plan(name: "Work", color: "blue"))
+        let a = Task(title: "A", plan: "Work", status: "To Do", order: 0)
+        let b = Task(title: "B", plan: "Work", status: "To Do", order: 1)
+        let c = Task(title: "C", plan: "Work", status: "To Do", order: 2)
+        try taskStore.createTask(a)
+        try taskStore.createTask(b)
+        try taskStore.createTask(c)
+
+        // Drag C to sit right before A: expected order becomes C, A, B.
+        try taskStore.reorderTask(c, before: a)
+
+        let ordered = taskStore.tasks
+            .filter { $0.plan == "Work" && $0.status == "To Do" }
+            .sorted { $0.order < $1.order }
+        XCTAssertEqual(ordered.map(\.title), ["C", "A", "B"])
+    }
+
+    func testReorderTaskAcrossStatusMovesPlanAndStatusToTargets() throws {
+        try taskStore.createPlan(Plan(name: "Work", color: "blue"))
+        let a = Task(title: "A", plan: "Work", status: "To Do", order: 0)
+        let b = Task(title: "B", plan: "Work", status: "In Progress", order: 0)
+        try taskStore.createTask(a)
+        try taskStore.createTask(b)
+
+        try taskStore.reorderTask(a, before: b)
+
+        let updatedA = try XCTUnwrap(taskStore.tasks.first { $0.id == a.id })
+        XCTAssertEqual(updatedA.status, "In Progress")
+        let ordered = taskStore.tasks
+            .filter { $0.plan == "Work" && $0.status == "In Progress" }
+            .sorted { $0.order < $1.order }
+        XCTAssertEqual(ordered.map(\.title), ["A", "B"])
+    }
+
+    func testReorderTaskNoOpsOnSelfDrop() throws {
+        try taskStore.createPlan(Plan(name: "Work", color: "blue"))
+        let a = Task(title: "A", plan: "Work", status: "To Do", order: 0)
+        try taskStore.createTask(a)
+
+        try taskStore.reorderTask(a, before: a)
+
+        XCTAssertEqual(taskStore.tasks.first?.order, 0)
+    }
+
+    func testReorderTaskNoOpsWhenEitherTaskIsBundledChild() throws {
+        try taskStore.createPlan(Plan(name: "Work", color: "blue"))
+        let target = Task(title: "Target", plan: "Work", status: "To Do")
+        let dragged = Task(title: "Dragged", plan: "Work", status: "To Do")
+        try taskStore.createTask(target)
+        try taskStore.createTask(dragged)
+        try taskStore.bundleTask(dragged, onto: target)
+        let bundledChild = try XCTUnwrap(taskStore.tasks.first { $0.id == dragged.id })
+
+        let other = Task(title: "Other", plan: "Work", status: "To Do", order: 5)
+        try taskStore.createTask(other)
+
+        // bundledChild is hidden inside a bundle — reordering it directly should no-op.
+        try taskStore.reorderTask(bundledChild, before: other)
+
+        let refreshedOther = try XCTUnwrap(taskStore.tasks.first { $0.id == other.id })
+        XCTAssertEqual(refreshedOther.order, 5)
+    }
+
+    func testNextOrderReturnsOneMoreThanCurrentMax() throws {
+        try taskStore.createPlan(Plan(name: "Work", color: "blue"))
+        try taskStore.createTask(Task(title: "A", plan: "Work", status: "To Do", order: 0))
+        try taskStore.createTask(Task(title: "B", plan: "Work", status: "To Do", order: 3))
+
+        XCTAssertEqual(taskStore.nextOrder(inPlan: "Work", status: "To Do"), 4)
+        XCTAssertEqual(taskStore.nextOrder(inPlan: "Work", status: "Done"), 0)
+    }
+
+    func testMoveTasksToStatusAppendsToEndOfDestinationColumn() throws {
+        try taskStore.createPlan(Plan(name: "Work", color: "blue"))
+        let existing = Task(title: "Existing", plan: "Work", status: "Done", order: 0)
+        let moving = Task(title: "Moving", plan: "Work", status: "To Do", order: 7)
+        try taskStore.createTask(existing)
+        try taskStore.createTask(moving)
+
+        try taskStore.moveTasks([moving], toStatus: "Done")
+
+        let updatedMoving = try XCTUnwrap(taskStore.tasks.first { $0.id == moving.id })
+        XCTAssertEqual(updatedMoving.status, "Done")
+        XCTAssertEqual(updatedMoving.order, 1)
+    }
 }
+
 

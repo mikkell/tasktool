@@ -730,6 +730,10 @@ class TaskStore: ObservableObject {
             if !hasMatchingStatus, let firstStatus = sortedTargetStatuses.first {
                 updated.status = firstStatus.name
             }
+            // Land at the end of the destination column rather than keeping whatever `order`
+            // value it had in its previous column, which could otherwise place it at an
+            // arbitrary position among the destination's tasks.
+            updated.order = nextOrder(inPlan: updated.plan, status: updated.status)
 
             do {
                 try updateTask(updated)
@@ -752,7 +756,68 @@ class TaskStore: ObservableObject {
 
             var updated = task
             updated.status = statusName
+            updated.order = nextOrder(inPlan: updated.plan, status: statusName)
 
+            do {
+                try updateTask(updated)
+            } catch {
+                if firstError == nil { firstError = error }
+            }
+        }
+
+        if let firstError { throw firstError }
+    }
+
+    /// Returns the `order` value one greater than the highest currently used among
+    /// `planName`'s `statusName` column (bundled children are excluded — they aren't shown as
+    /// independent cards there). Used so a task moved into a column lands at the end of the
+    /// list instead of retaining an `order` value that made sense only in its previous column.
+    func nextOrder(inPlan planName: String, status statusName: String) -> Int {
+        let maxOrder = tasks
+            .filter { $0.plan == planName && $0.status == statusName && $0.parentBundleID == nil }
+            .map(\.order)
+            .max() ?? -1
+        return maxOrder + 1
+    }
+
+    /// Reorders `draggedTask` to sit immediately before `targetTask` within `targetTask`'s
+    /// plan/status column (a card dropped on top of another card, before the 3-second
+    /// bundle-activation hover has elapsed — see `ContentView.KanbanColumn`). If `draggedTask`
+    /// is moving in from a different plan or status, it's moved into `targetTask`'s plan/status
+    /// as part of the same operation, just landing at this specific position instead of being
+    /// appended to the end (which is what dropping in the column's empty space does).
+    ///
+    /// Every task in the destination column is reassigned a fresh, sequential `order` (0, 1, 2,
+    /// ...); only tasks whose `order` (or, for the dragged task, `plan`/`status`) actually
+    /// changed are written to disk. No-ops when dropped onto itself, or when either task is
+    /// currently hidden inside a bundle (bundled children aren't independently reorderable on
+    /// the board; the bundle container card itself can be reordered like any other task).
+    func reorderTask(_ draggedTask: Task, before targetTask: Task) throws {
+        guard draggedTask.id != targetTask.id else { return }
+        guard draggedTask.parentBundleID == nil, targetTask.parentBundleID == nil else { return }
+
+        var destination = tasks
+            .filter {
+                $0.plan == targetTask.plan && $0.status == targetTask.status
+                    && $0.parentBundleID == nil && $0.id != draggedTask.id
+            }
+            .sorted { $0.order < $1.order }
+
+        guard let targetIndex = destination.firstIndex(where: { $0.id == targetTask.id }) else { return }
+
+        let movedAcrossColumn = draggedTask.plan != targetTask.plan || draggedTask.status != targetTask.status
+        var movedTask = draggedTask
+        movedTask.plan = targetTask.plan
+        movedTask.status = targetTask.status
+        destination.insert(movedTask, at: targetIndex)
+
+        var firstError: Error?
+        for (index, item) in destination.enumerated() {
+            let needsWrite = item.order != index || (item.id == movedTask.id && movedAcrossColumn)
+            guard needsWrite else { continue }
+
+            var updated = item
+            updated.order = index
             do {
                 try updateTask(updated)
             } catch {

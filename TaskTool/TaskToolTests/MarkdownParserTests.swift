@@ -186,7 +186,7 @@ final class MarkdownParserTests: XCTestCase {
     func testRoundtripTask() throws {
         let original = Task(id: UUID(), title: "Roundtrip Task", plan: "Work",
                             status: "In Progress", tags: ["alpha", "beta"],
-                            body: "Some body content")
+                            body: "Some body content", order: 3)
         let serialized = MarkdownParser.serializeTask(original)
         let parsed = try MarkdownParser.parseTask(from: serialized, plan: "Work")
 
@@ -195,6 +195,25 @@ final class MarkdownParserTests: XCTestCase {
         XCTAssertEqual(parsed.status, original.status)
         XCTAssertEqual(parsed.tags.sorted(), original.tags.sorted())
         XCTAssertEqual(parsed.body, original.body)
+        XCTAssertEqual(parsed.order, original.order)
+    }
+
+    func testParseTaskWithoutOrderDefaultsToZero() throws {
+        let content = """
+        ---
+        id: 12345678-1234-1234-1234-123456789012
+        type: task
+        plan: Work
+        status: To Do
+        created: 2026-01-23T10:00:00Z
+        updated: 2026-01-23T10:00:00Z
+        ---
+        # Legacy Task
+
+        No order field in this frontmatter.
+        """
+        let parsed = try MarkdownParser.parseTask(from: content, plan: "Work")
+        XCTAssertEqual(parsed.order, 0)
     }
 
     func testRoundtripTaskWithDueDate() throws {

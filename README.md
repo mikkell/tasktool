@@ -15,8 +15,8 @@ A powerful, file-based task management application for macOS that stores all dat
 - 🎨 **Custom Plans & Statuses** — Color-coded plans, each with fully configurable status columns
 - 🏷️ **Tagging System** — Add tags to tasks for easy search and filtering
 - 📅 **Due Dates** — Optional per-task due dates with a calendar picker
-- 🔍 **Drag & Drop** — Move tasks between status columns and between plans
-- 🧩 **Task Bundling** — Drag one task card onto another to bundle them into a group card; expand it to view/manage each task, or remove one to unbundle (auto-dissolves when only one task remains)
+- 🔍 **Drag & Drop** — Move tasks between status columns and between plans, or reorder them within a column
+- 🧩 **Task Bundling** — Drag one task card onto another and hold for 3 seconds to bundle them into a group card; a quicker drop instead reorders the dragged task next to it. Expand a bundle to view/manage each task, or remove one to unbundle (auto-dissolves when only one task remains)
 - 📦 **Archive** — Move completed tasks into a named subfolder under `Archived/` (defaults to the current date), so a batch of tasks done together stays grouped for later review
 - 💻 **CLI-Friendly** — All files are plain text; manipulate with `grep`, `sed`, LLMs, or any editor
 - 🔗 **Obsidian Compatible** — Full YAML 1.2 frontmatter compatibility via [Yams](https://github.com/jpsim/Yams)
@@ -307,7 +307,8 @@ If two tasks produce the same filename, the second receives a UUID suffix: `dupl
 | Edit | Click a task card to open the detail sheet |
 | Move status | Drag task card to the target column |
 | Move to different plan | Drag task card to the plan name in the sidebar |
-| Bundle tasks | Drag a task card and drop it directly onto another card to group them; click the bundle card to view/rename/unbundle |
+| Reorder within a column | Drag a task card and drop it directly onto another card (a quick drop, released before the 3-second bundle hold) — it lands right before the card you dropped on |
+| Bundle tasks | Drag a task card onto another card and hold for 3 seconds (shown with a "+" badge once armed) before releasing to group them; click the bundle card to view/rename/unbundle |
 | Delete | Open task detail → "Delete Task" |
 | Archive done tasks | Toolbar → "Archive Done" → prompts for a subfolder name (defaults to today's date) → moves all Done-status tasks to `{plan}/Archived/{folder}/` |
 
