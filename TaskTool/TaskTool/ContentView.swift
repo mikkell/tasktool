@@ -850,6 +850,9 @@ struct KanbanColumn: View {
                 VStack(spacing: 8) {
                     ForEach(tasks) { task in
                         let bundleSize: Int = task.isBundle ? taskStore.childTasks(of: task).count : 0
+                        let earliestChildDueDate: Date? = task.isBundle
+                            ? taskStore.childTasks(of: task).compactMap(\.dueDate).min()
+                            : nil
                         let isArmedForBundle = bundleDropTargetID == task.id
                         let isReorderTarget = hoveredCardID == task.id && !isArmedForBundle
                         TaskCard(
@@ -860,6 +863,7 @@ struct KanbanColumn: View {
                             bundleSize: bundleSize,
                             isBundleDropTarget: isArmedForBundle,
                             isReorderDropTarget: isReorderTarget,
+                            earliestChildDueDate: earliestChildDueDate,
                             onToggleSelect: {
                                 if selectedTaskIDs.contains(task.id) {
                                     selectedTaskIDs.remove(task.id)
@@ -1056,10 +1060,20 @@ struct TaskCard: View {
     /// True while another task is hovering over this card but bundling hasn't armed yet —
     /// dropping now would reorder the dragged task to sit just before this one.
     var isReorderDropTarget: Bool = false
+    /// Earliest due date among this card's bundled child tasks, when it's a bundle
+    /// container. `nil` for ordinary tasks (which use `task.dueDate` directly).
+    var earliestChildDueDate: Date? = nil
     var onToggleSelect: (() -> Void)? = nil
     @State private var isHovered = false
 
     private enum DueUrgency { case overdue, today, tomorrow, upcoming }
+
+    /// The due date to display/evaluate for this card: the task's own due date, or —
+    /// for bundle containers, which aren't directly assigned a due date — the earliest
+    /// due date among its bundled children.
+    private var effectiveDueDate: Date? {
+        task.dueDate ?? (task.isBundle ? earliestChildDueDate : nil)
+    }
 
     // Matches markdown image references, e.g. "![alt](attachments/photo.png)", so the
     // card preview can strip them out and show an icon/count instead of raw markdown.
@@ -1109,7 +1123,7 @@ struct TaskCard: View {
     }
 
     private var dueUrgency: DueUrgency {
-        guard let dueDate = task.dueDate else { return .upcoming }
+        guard let dueDate = effectiveDueDate else { return .upcoming }
         let calendar = Calendar.current
         let today = calendar.startOfDay(for: Date())
         let taskDay = calendar.startOfDay(for: dueDate)
@@ -1244,12 +1258,19 @@ struct TaskCard: View {
                 }
             }
 
-            if let dueDate = task.dueDate {
+            if let dueDate = effectiveDueDate {
                 HStack {
                     Image(systemName: dueDateIcon)
                         .font(.caption)
                     Text(dueDate, style: .date)
                         .font(.caption)
+                    // Clarify the badge isn't the bundle's own date when it's inherited
+                    // from a child task's due date.
+                    if task.isBundle && task.dueDate == nil {
+                        Text("(earliest)")
+                            .font(.caption2)
+                            .foregroundColor(.secondary)
+                    }
                 }
                 .foregroundColor(dueDateColor)
             }
@@ -1387,6 +1408,8 @@ private struct BundleDetailView: View {
 
                                 Spacer()
 
+                                BundleChildDueDateControl(child: child)
+
                                 Button(action: { removeFromBundle(child) }) {
                                     Image(systemName: "minus.circle")
                                         .font(.caption)
@@ -1432,6 +1455,70 @@ private struct BundleDetailView: View {
             }
         } catch {
             debugLog("❌ Failed to remove task from bundle: \(error.localizedDescription)")
+        }
+    }
+}
+
+/// Compact due-date badge/control shown on each bundled task's row in `BundleDetailView`,
+/// letting the user set or clear that task's due date without opening its full details.
+private struct BundleChildDueDateControl: View {
+    let child: Task
+    @EnvironmentObject var taskStore: TaskStore
+    @State private var showingPicker = false
+    @State private var pickerDate: Date = Date()
+
+    /// Re-resolve the child from the live store so edits from elsewhere (e.g. its own
+    /// detail sheet) are reflected immediately.
+    private var liveChild: Task {
+        taskStore.tasks.first(where: { $0.id == child.id }) ?? child
+    }
+
+    var body: some View {
+        Button(action: {
+            pickerDate = liveChild.dueDate ?? Date()
+            showingPicker = true
+        }) {
+            HStack(spacing: 4) {
+                Image(systemName: liveChild.dueDate == nil ? "calendar.badge.plus" : "calendar")
+                    .font(.caption)
+                if let dueDate = liveChild.dueDate {
+                    Text(dueDate, style: .date)
+                        .font(.caption2)
+                }
+            }
+            .foregroundColor(liveChild.dueDate == nil ? .secondary : .accentColor)
+        }
+        .buttonStyle(.plain)
+        .help(liveChild.dueDate == nil ? "Set Due Date" : "Change Due Date")
+        .popover(isPresented: $showingPicker) {
+            VStack(alignment: .leading, spacing: 12) {
+                DatePicker("Due Date", selection: $pickerDate, displayedComponents: .date)
+                    .datePickerStyle(.graphical)
+                    .labelsHidden()
+                    .onChange(of: pickerDate) { _, newValue in
+                        setDueDate(newValue)
+                    }
+
+                if liveChild.dueDate != nil {
+                    Button("Clear Due Date", role: .destructive) {
+                        setDueDate(nil)
+                        showingPicker = false
+                    }
+                    .buttonStyle(.plain)
+                    .font(.caption)
+                }
+            }
+            .padding()
+        }
+    }
+
+    private func setDueDate(_ date: Date?) {
+        var updated = liveChild
+        updated.dueDate = date
+        do {
+            try taskStore.updateTask(updated)
+        } catch {
+            debugLog("❌ Failed to update bundled task's due date: \(error.localizedDescription)")
         }
     }
 }
