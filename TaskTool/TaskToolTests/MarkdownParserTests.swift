@@ -31,6 +31,7 @@ final class MarkdownParserTests: XCTestCase {
         XCTAssertEqual(task.body, "Task description")
         XCTAssertTrue(task.tags.isEmpty)
         XCTAssertNil(task.dueDate)
+        XCTAssertNil(task.completedAt)
     }
 
     func testParseTaskWithTags() throws {
@@ -173,6 +174,22 @@ final class MarkdownParserTests: XCTestCase {
         let task = Task(title: "No Date", plan: "Work", status: "To Do")
         let markdown = MarkdownParser.serializeTask(task)
         XCTAssertFalse(markdown.contains("due_date:"))
+    }
+
+    func testRoundtripTaskWithCompletedAt() throws {
+        let completedAt = ISO8601DateFormatter().date(from: "2026-09-30T13:45:00Z")!
+        let original = Task(
+            title: "Completed Task",
+            plan: "Work",
+            status: "Done",
+            completedAt: completedAt
+        )
+
+        let parsed = try MarkdownParser.parseTask(
+            from: MarkdownParser.serializeTask(original),
+            plan: "Work"
+        )
+        XCTAssertEqual(parsed.completedAt, completedAt)
     }
 
     func testSerializeTaskOmitsTagsWhenEmpty() {
@@ -421,5 +438,24 @@ final class MarkdownParserTests: XCTestCase {
         let parsed = try MarkdownParser.parseSettings(from: serialized)
         XCTAssertEqual(parsed.planOrder, original.planOrder)
         XCTAssertEqual(parsed.availableTags, original.availableTags)
+    }
+
+    func testRoundtripOverviewSettings() throws {
+        let original = Settings(
+            planOrder: ["Work"],
+            availableTags: [],
+            overviewSelectedPlanNames: ["Work", "Personal"],
+            overviewFocusDate: "2026-10-08",
+            overviewFocusNote: "Ship the dashboard\nReview the release notes",
+            overviewFocusTaskIDs: ["12345678-1234-1234-1234-123456789012"]
+        )
+
+        let parsed = try MarkdownParser.parseSettings(
+            from: MarkdownParser.serializeSettings(original)
+        )
+        XCTAssertEqual(parsed.overviewSelectedPlanNames, original.overviewSelectedPlanNames)
+        XCTAssertEqual(parsed.overviewFocusDate, original.overviewFocusDate)
+        XCTAssertEqual(parsed.overviewFocusNote, original.overviewFocusNote)
+        XCTAssertEqual(parsed.overviewFocusTaskIDs, original.overviewFocusTaskIDs)
     }
 }

@@ -29,9 +29,11 @@ struct PendingUndo: Identifiable {
 class TaskStore: ObservableObject {
     @Published var plans: [Plan] = []
     @Published var tasks: [Task] = []
+    @Published var archivedTasks: [Task] = []
     @Published var storageURL: URL?
     @Published var settings: Settings = Settings()
     @Published var pendingUndo: PendingUndo?
+    @Published var outlookCaptureNotice: OutlookCaptureNotice?
     
     private let fileManager = FileManager.default
     private var fileWatcher: DispatchSourceFileSystemObject?
@@ -40,7 +42,6 @@ class TaskStore: ObservableObject {
     private var pendingUndoDismissWorkItem: DispatchWorkItem?
     private var reloadDebounceWork: DispatchWorkItem?  // Debounce rapid file system events
     private var savingWorkItem: DispatchWorkItem?  // Single cancellable timer for isSaving reset
-    
     func setStorageLocation(_ url: URL) {
         debugLog("📍 setStorageLocation called with: \(url.path)")
         
@@ -102,7 +103,7 @@ class TaskStore: ObservableObject {
                     debugLog("✅ Refreshed security-scoped bookmark")
                 }
             }
-            
+
             self.storageURL = url
             loadAllData()
             startWatching()
@@ -110,12 +111,80 @@ class TaskStore: ObservableObject {
             debugLog("Failed to resolve bookmark: \(error)")
         }
     }
+
+    func dismissOutlookCaptureNotice() {
+        outlookCaptureNotice = nil
+    }
+
+    func showOutlookEmailDropError(_ message: String) {
+        showOutlookCaptureError(message)
+    }
+
+    func captureOutlookEmail(data: Data) {
+        do {
+            let message = try OutlookEmailMessage(data: data)
+            let task = try createInboxTask(for: message)
+            let notice = message.bodyDiagnostic.map { " Captured without body. \($0)" } ?? ""
+            outlookCaptureNotice = OutlookCaptureNotice(
+                title: message.bodyDiagnostic == nil ? "Task captured" : "Task captured without email body",
+                message: "Created “\(task.title)” in \(task.plan)." + notice,
+                isError: message.bodyDiagnostic != nil
+            )
+        } catch {
+            showOutlookCaptureError(error.localizedDescription)
+        }
+    }
+
+    func createInboxTask(for message: OutlookEmailMessage) throws -> Task {
+        guard storageURL != nil else {
+            throw OutlookEmailDropError.storageUnavailable
+        }
+
+        let inboxPlan: Plan
+        if let existingInbox = plans.first(where: {
+            $0.name.localizedCaseInsensitiveCompare("Inbox") == .orderedSame
+        }) {
+            inboxPlan = existingInbox
+        } else {
+            let newInbox = Plan(name: "Inbox", color: "gray")
+            try createPlan(newInbox)
+            guard let createdInbox = plans.first(where: { $0.name == newInbox.name }) else {
+                throw OutlookEmailDropError.storageUnavailable
+            }
+            inboxPlan = createdInbox
+        }
+
+        guard let initialStatus = inboxPlan.statuses
+            .sorted(by: { $0.order < $1.order })
+            .first(where: { !$0.isDoneStatus }) else {
+            throw OutlookEmailDropError.inboxHasNoStatuses
+        }
+
+        let task = Task(
+            title: message.subject,
+            plan: inboxPlan.name,
+            status: initialStatus.name,
+            tags: ["E-Mail"],
+            body: message.taskBody
+        )
+        try createTask(task)
+        return tasks.first(where: { $0.id == task.id }) ?? task
+    }
+
+    private func showOutlookCaptureError(_ message: String) {
+        outlookCaptureNotice = OutlookCaptureNotice(
+            title: "Couldn't capture Outlook message",
+            message: message,
+            isError: true
+        )
+    }
     
     func loadAllData() {
         guard let storageURL = storageURL else { return }
         
         plans = []
         tasks = []
+        archivedTasks = []
         
         // Load settings first
         loadSettings()
@@ -144,6 +213,7 @@ class TaskStore: ObservableObject {
             }
             
             loadTasks(from: planFolder, planName: planName)
+            loadArchivedTasks(from: planFolder, planName: planName)
         }
         
         // Apply order from settings
@@ -179,6 +249,10 @@ class TaskStore: ObservableObject {
             debugLog("⚠️ Deduplicated \(tasks.count - seen.count) task(s) with duplicate UUIDs")
             tasks = Array(seen.values)
         }
+
+        let activeTaskIDs = Set(tasks.map(\.id))
+        var seenArchivedTaskIDs = activeTaskIDs
+        archivedTasks = archivedTasks.filter { seenArchivedTaskIDs.insert($0.id).inserted }
 
         // Remove non-canonical plans whose tasks were entirely absorbed by canonical equivalents.
         // This collapses ghost folders left behind by cloud-sync conflicts after a rename or
@@ -296,6 +370,22 @@ class TaskStore: ObservableObject {
             }
         }
     }
+
+    private func loadArchivedTasks(from planFolder: URL, planName: String) {
+        let archiveFolder = planFolder.appendingPathComponent("Archived")
+        guard let enumerator = fileManager.enumerator(
+            at: archiveFolder,
+            includingPropertiesForKeys: nil,
+            options: [.skipsHiddenFiles]
+        ) else { return }
+
+        for case let taskFile as URL in enumerator where taskFile.pathExtension == "md" {
+            if let content = try? String(contentsOf: taskFile, encoding: .utf8),
+               let task = try? MarkdownParser.parseTask(from: content, plan: planName) {
+                archivedTasks.append(task)
+            }
+        }
+    }
     
     func createPlan(_ plan: Plan) throws {
         debugLog("📝 createPlan called for: \(plan.name)")
@@ -365,19 +455,28 @@ class TaskStore: ObservableObject {
             plans[index] = plan
         }
 
-        // Migrate tasks whose status matches a renamed column.
-        if !renames.isEmpty {
-            for index in tasks.indices where tasks[index].plan == plan.name {
-                if let newStatus = renames[tasks[index].status] {
-                    var updated = tasks[index]
-                    updated.status = newStatus
-                    updated.updated = Date()
-                    let taskFile = planFolder.appendingPathComponent(updated.fileName)
-                    let taskContent = MarkdownParser.serializeTask(updated)
-                    try? taskContent.write(to: taskFile, atomically: false, encoding: .utf8)
-                    tasks[index] = updated
-                }
+        // Migrate renamed statuses and stamp tasks newly entering a Done status.
+        for index in tasks.indices where tasks[index].plan == plan.name {
+            let oldTask = tasks[index]
+            var updated = oldTask
+            updated.status = renames[oldTask.status] ?? oldTask.status
+
+            let wasDone = Self.isDoneStatus(oldTask.status, in: oldPlan?.statuses ?? [])
+            let isNowDone = Self.isDoneStatus(updated.status, in: plan.statuses)
+            if !wasDone && isNowDone {
+                updated.completedAt = Date()
             }
+
+            guard updated.status != oldTask.status || updated.completedAt != oldTask.completedAt else {
+                continue
+            }
+
+            updated.updated = Date()
+            let taskFile = resolveTaskFile(for: oldTask, in: planFolder)
+                ?? planFolder.appendingPathComponent(oldTask.fileName)
+            let taskContent = MarkdownParser.serializeTask(updated)
+            try? taskContent.write(to: taskFile, atomically: false, encoding: .utf8)
+            tasks[index] = updated
         }
     }
     
@@ -394,6 +493,7 @@ class TaskStore: ObservableObject {
         
         plans.removeAll { $0.id == plan.id }
         tasks.removeAll { $0.plan == plan.name }
+        archivedTasks.removeAll { $0.plan == plan.name }
         
         // Update settings
         settings.planOrder.removeAll { $0 == plan.name }
@@ -445,10 +545,24 @@ class TaskStore: ObservableObject {
             let taskContent = MarkdownParser.serializeTask(updatedTask)
             try? taskContent.write(to: taskFile, atomically: false, encoding: .utf8)
         }
+        for index in archivedTasks.indices where archivedTasks[index].plan == oldName {
+            archivedTasks[index].plan = newName
+        }
 
-        // Update settings.yaml plan order.
+        // Update settings.yaml plan order and any explicit Overview filter.
+        var settingsChanged = false
         if let index = settings.planOrder.firstIndex(of: oldName) {
             settings.planOrder[index] = newName
+            settingsChanged = true
+        }
+        if let selectedPlanNames = settings.overviewSelectedPlanNames {
+            let renamedPlanNames = selectedPlanNames.map { $0 == oldName ? newName : $0 }
+            if renamedPlanNames != selectedPlanNames {
+                settings.overviewSelectedPlanNames = renamedPlanNames
+                settingsChanged = true
+            }
+        }
+        if settingsChanged {
             try saveSettings()
         }
 
@@ -478,21 +592,26 @@ class TaskStore: ObservableObject {
             debugLog("❌ Plan folder doesn't exist: \(planFolder.path)")
             throw NSError(domain: "TaskStore", code: 1, userInfo: [NSLocalizedDescriptionKey: "Plan folder '\(task.plan)' does not exist"])
         }
-        
-        var taskFile = planFolder.appendingPathComponent(task.fileName)
+
+        var taskToCreate = task
+        if isDoneTask(taskToCreate), taskToCreate.completedAt == nil {
+            taskToCreate.completedAt = Date()
+        }
+
+        var taskFile = planFolder.appendingPathComponent(taskToCreate.fileName)
         
         // If a file with this name already exists (two tasks with identical titles),
         // append the first 8 chars of the UUID to keep both tasks on disk.
         if fileManager.fileExists(atPath: taskFile.path) {
-            let base = (task.fileName as NSString).deletingPathExtension
-            let uniqueName = "\(base)-\(task.id.uuidString.prefix(8)).md"
+            let base = (taskToCreate.fileName as NSString).deletingPathExtension
+            let uniqueName = "\(base)-\(taskToCreate.id.uuidString.prefix(8)).md"
             taskFile = planFolder.appendingPathComponent(uniqueName)
             debugLog("⚠️ Filename collision detected, using: \(uniqueName)")
         }
         
         debugLog("📄 Creating task file: \(taskFile.path)")
         
-        let content = MarkdownParser.serializeTask(task)
+        let content = MarkdownParser.serializeTask(taskToCreate)
         debugLog("📝 Task content length: \(content.count) characters")
         
         markSaving()
@@ -501,12 +620,12 @@ class TaskStore: ObservableObject {
 
         // Guard against duplicating a task that was already added to memory
         // (e.g. if the file-watcher fired and loadAllData ran while we were writing).
-        if !tasks.contains(where: { $0.id == task.id }) {
-            tasks.append(task)
+        if !tasks.contains(where: { $0.id == taskToCreate.id }) {
+            tasks.append(taskToCreate)
         }
         debugLog("✅ Task added to tasks array. Total tasks: \(tasks.count)")
 
-        try? registerTags(task.tags)
+        try? registerTags(taskToCreate.tags)
     }
 
     func updateTask(_ task: Task) throws {
@@ -527,6 +646,9 @@ class TaskStore: ObservableObject {
         
         var updatedTask = task
         updatedTask.updated = Date()
+        if !isDoneTask(oldTask) && isDoneTask(updatedTask) {
+            updatedTask.completedAt = Date()
+        }
         
         let content = MarkdownParser.serializeTask(updatedTask)
         
@@ -558,6 +680,15 @@ class TaskStore: ObservableObject {
         tasks[index] = updatedTask
 
         try? registerTags(updatedTask.tags)
+    }
+
+    func isDoneTask(_ task: Task) -> Bool {
+        guard let plan = plans.first(where: { $0.name == task.plan }) else { return false }
+        return Self.isDoneStatus(task.status, in: plan.statuses)
+    }
+
+    private static func isDoneStatus(_ statusName: String, in statuses: [Plan.TaskStatus]) -> Bool {
+        statuses.first(where: { $0.name == statusName })?.isDoneStatus ?? false
     }
 
     /// Adds any tags not already present in the global tag registry (`settings.availableTags`),
@@ -1090,6 +1221,7 @@ class TaskStore: ObservableObject {
         // Move each done task to the archive folder
         markSaving()
         for task in doneTasks {
+            let taskToArchive = tasks.first(where: { $0.id == task.id }) ?? task
             let currentFile = resolveTaskFile(for: task, in: planFolder)
                 ?? planFolder.appendingPathComponent(task.fileName)
             var archivedFile = archiveFolder.appendingPathComponent(task.fileName)
@@ -1103,6 +1235,9 @@ class TaskStore: ObservableObject {
             if fileManager.fileExists(atPath: currentFile.path) {
                 try fileManager.moveItem(at: currentFile, to: archivedFile)
                 debugLog("📦 Archived: \(task.title)")
+                if !archivedTasks.contains(where: { $0.id == taskToArchive.id }) {
+                    archivedTasks.append(taskToArchive)
+                }
             }
             
             // Remove from in-memory array

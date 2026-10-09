@@ -51,6 +51,7 @@ struct MarkdownParser {
         let created = parseDate("created")
         let updated = parseDate("updated")
         let dueDate = parseDateOptional("due_date")
+        let completedAt = parseDateOptional("completed_at")
         
         return Task(
             id: UUID(uuidString: id) ?? UUID(),
@@ -61,6 +62,7 @@ struct MarkdownParser {
             tags: tags,
             created: created,
             updated: updated,
+            completedAt: completedAt,
             body: body,
             bundledTaskIDs: bundledTaskIDs,
             parentBundleID: parentBundleID,
@@ -82,6 +84,10 @@ struct MarkdownParser {
         
         if let dueDate = task.dueDate {
             frontmatter += "\ndue_date: \(dateFormatter.string(from: dueDate))"
+        }
+
+        if let completedAt = task.completedAt {
+            frontmatter += "\ncompleted_at: \(dateFormatter.string(from: completedAt))"
         }
         
         if !task.tags.isEmpty {
@@ -245,7 +251,9 @@ struct MarkdownParser {
             || value.hasPrefix("{")
             || value.hasPrefix("[")
         guard needsQuoting else { return value }
-        let escaped = value.replacingOccurrences(of: "\"", with: "\\\"")
+        let escaped = value
+            .replacingOccurrences(of: "\\", with: "\\\\")
+            .replacingOccurrences(of: "\"", with: "\\\"")
         return "\"\(escaped)\""
     }
     
@@ -263,8 +271,30 @@ struct MarkdownParser {
         }
         let planOrder = metadata["plan_order"] as? [String] ?? []
         let availableTags = metadata["available_tags"] as? [String] ?? []
+        let overviewSelectedPlanNames = metadata["overview_selected_plan_names"] as? [String]
+        let overviewFocusDate: String?
+        if let string = metadata["overview_focus_date"] as? String {
+            overviewFocusDate = string
+        } else if let date = metadata["overview_focus_date"] as? Date {
+            let formatter = DateFormatter()
+            formatter.calendar = Calendar(identifier: .gregorian)
+            formatter.timeZone = TimeZone(secondsFromGMT: 0)
+            formatter.dateFormat = "yyyy-MM-dd"
+            overviewFocusDate = formatter.string(from: date)
+        } else {
+            overviewFocusDate = nil
+        }
+        let overviewFocusNote = metadata["overview_focus_note"] as? String ?? ""
+        let overviewFocusTaskIDs = metadata["overview_focus_task_ids"] as? [String] ?? []
         
-        return Settings(planOrder: planOrder, availableTags: availableTags)
+        return Settings(
+            planOrder: planOrder,
+            availableTags: availableTags,
+            overviewSelectedPlanNames: overviewSelectedPlanNames,
+            overviewFocusDate: overviewFocusDate,
+            overviewFocusNote: overviewFocusNote,
+            overviewFocusTaskIDs: overviewFocusTaskIDs
+        )
     }
     
     static func serializeSettings(_ settings: Settings) -> String {
@@ -279,6 +309,40 @@ struct MarkdownParser {
         
         for tag in settings.availableTags {
             yaml += "  - \(yamlQuote(tag))\n"
+        }
+
+        if let selectedPlanNames = settings.overviewSelectedPlanNames {
+            if selectedPlanNames.isEmpty {
+                yaml += "overview_selected_plan_names: []\n"
+            } else {
+                yaml += "overview_selected_plan_names:\n"
+                for planName in selectedPlanNames {
+                    yaml += "  - \(yamlQuote(planName))\n"
+                }
+            }
+        }
+
+        if let focusDate = settings.overviewFocusDate {
+            yaml += "overview_focus_date: \(focusDate)\n"
+        }
+        if !settings.overviewFocusNote.isEmpty {
+            let normalizedNote = settings.overviewFocusNote
+                .replacingOccurrences(of: "\r\n", with: "\n")
+                .replacingOccurrences(of: "\r", with: "\n")
+            if normalizedNote.contains("\n") {
+                yaml += "overview_focus_note: |-\n"
+                for line in normalizedNote.components(separatedBy: "\n") {
+                    yaml += "  \(line)\n"
+                }
+            } else {
+                yaml += "overview_focus_note: \(yamlQuote(normalizedNote))\n"
+            }
+        }
+        if !settings.overviewFocusTaskIDs.isEmpty {
+            yaml += "overview_focus_task_ids:\n"
+            for taskID in settings.overviewFocusTaskIDs {
+                yaml += "  - \(yamlQuote(taskID))\n"
+            }
         }
         
         return yaml

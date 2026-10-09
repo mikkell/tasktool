@@ -232,6 +232,7 @@ struct ContentView: View {
     @EnvironmentObject var taskStore: TaskStore
     @State private var showingFolderPicker = false
     @State private var selectedPlan: Plan?
+    @State private var showingOverview = true
     @State private var showingNewPlan = false
     @State private var showingNewTask = false
     @State private var editingPlan: Plan?
@@ -240,34 +241,64 @@ struct ContentView: View {
     @State private var showingDeleteError = false
 
     var body: some View {
-        if taskStore.storageURL == nil {
-            VStack(spacing: 20) {
-                Image(systemName: "folder.badge.questionmark")
-                    .font(.system(size: 64))
-                    .foregroundColor(.secondary)
-                
-                Text("Choose Storage Location")
-                    .font(.title)
-                
-                Text("Select a folder where your tasks and plans will be stored")
-                    .foregroundColor(.secondary)
-                    .multilineTextAlignment(.center)
-                    .padding(.horizontal)
-                
-                Button("Choose Folder") {
-                    showFolderPicker()
+        Group {
+            if taskStore.storageURL == nil {
+                VStack(spacing: 20) {
+                    Image(systemName: "folder.badge.questionmark")
+                        .font(.system(size: 64))
+                        .foregroundColor(.secondary)
+
+                    Text("Choose Storage Location")
+                        .font(.title)
+
+                    Text("Select a folder where your tasks and plans will be stored")
+                        .foregroundColor(.secondary)
+                        .multilineTextAlignment(.center)
+                        .padding(.horizontal)
+
+                    Button("Choose Folder") {
+                        showFolderPicker()
+                    }
+                    .buttonStyle(.borderedProminent)
                 }
-                .buttonStyle(.borderedProminent)
-            }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
-        } else {
-            NavigationSplitView {
-                List(selection: $selectedPlan) {
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else {
+                NavigationSplitView {
+                List(selection: Binding(
+                    get: { selectedPlan },
+                    set: { plan in
+                        selectedPlan = plan
+                        if plan != nil {
+                            showingOverview = false
+                        }
+                    }
+                )) {
+                    Section {
+                        Button {
+                            selectedPlan = nil
+                            showingOverview = true
+                        } label: {
+                            Label("Overview", systemImage: "square.grid.2x2")
+                                .foregroundStyle(showingOverview ? Color.accentColor : Color.primary)
+                        }
+                        .buttonStyle(.plain)
+                        .listRowBackground(showingOverview ? Color.accentColor.opacity(0.12) : nil)
+                    }
+
                     Section("Plans") {
                         ForEach(Array(taskStore.plans.sorted(by: { $0.order < $1.order }).enumerated()), id: \.element.id) { index, plan in
-                            PlanSidebarRow(plan: plan, shortcutNumber: index < 9 ? index + 1 : nil) { providers in
-                                handleTaskDropOnPlan(providers: providers, targetPlan: plan)
-                            }
+                            PlanSidebarRow(
+                                plan: plan,
+                                shortcutNumber: index < 9 ? index + 1 : nil,
+                                isSelected: selectedPlan?.id == plan.id && !showingOverview,
+                                onSelect: {
+                                    selectedPlan = plan
+                                    showingOverview = false
+                                },
+                                onDrop: { providers in
+                                    handleTaskDropOnPlan(providers: providers, targetPlan: plan)
+                                }
+                            )
                             .contextMenu {
                                 Button("Edit...") {
                                     editingPlan = plan
@@ -344,7 +375,9 @@ struct ContentView: View {
                     }
                 }
             } detail: {
-                if let plan = selectedPlan {
+                if showingOverview {
+                    OverviewView()
+                } else if let plan = selectedPlan {
                     PlanDetailView(planId: plan.id)
                 } else {
                     Text("Select a plan")
@@ -372,6 +405,7 @@ struct ContentView: View {
                             try taskStore.deletePlanWithUndo(plan)
                             if selectedPlan?.id == plan.id {
                                 selectedPlan = nil
+                                showingOverview = true
                             }
                         } catch {
                             deleteErrorMessage = "Failed to delete '\(plan.name)': \(error.localizedDescription)"
@@ -390,7 +424,16 @@ struct ContentView: View {
             } message: {
                 Text(deleteErrorMessage)
             }
-            .overlay(alignment: .bottomTrailing) {
+            }
+        }
+        .overlay(alignment: .bottomTrailing) {
+            VStack(alignment: .trailing, spacing: 10) {
+                if let notice = taskStore.outlookCaptureNotice {
+                    OutlookCaptureNoticeView(notice: notice) {
+                        taskStore.dismissOutlookCaptureNotice()
+                    }
+                    .transition(.move(edge: .bottom).combined(with: .opacity))
+                }
                 if let pendingUndo = taskStore.pendingUndo {
                     UndoToastView(
                         message: pendingUndo.message,
@@ -399,11 +442,12 @@ struct ContentView: View {
                             taskStore.dismissPendingUndo()
                         }
                     )
-                    .padding()
                     .transition(.move(edge: .bottom).combined(with: .opacity))
-                    .animation(.easeInOut(duration: 0.2), value: taskStore.pendingUndo?.id)
                 }
             }
+            .padding()
+            .animation(.easeInOut(duration: 0.2), value: taskStore.pendingUndo?.id)
+            .animation(.easeInOut(duration: 0.2), value: taskStore.outlookCaptureNotice?.id)
         }
     }
     
@@ -427,6 +471,7 @@ struct ContentView: View {
         let sortedPlans = taskStore.plans.sorted(by: { $0.order < $1.order })
         guard number >= 1, number <= sortedPlans.count else { return }
         selectedPlan = sortedPlans[number - 1]
+        showingOverview = false
     }
     
     private func handleTaskDropOnPlan(providers: [NSItemProvider], targetPlan: Plan) -> Bool {
@@ -482,11 +527,13 @@ private struct PlanSidebarRow: View {
     let plan: Plan
     /// 1-9 shortcut number for this plan's position, or nil if beyond the first 9 plans.
     let shortcutNumber: Int?
+    let isSelected: Bool
+    let onSelect: () -> Void
     let onDrop: ([NSItemProvider]) -> Bool
     @State private var isTargeted = false
 
     var body: some View {
-        NavigationLink(value: plan) {
+        Button(action: onSelect) {
             HStack {
                 ZStack {
                     Circle()
@@ -499,6 +546,7 @@ private struct PlanSidebarRow: View {
                     }
                 }
                 Text(plan.name)
+                    .foregroundStyle(isSelected ? Color.accentColor : Color.primary)
                 Spacer()
                 if isTargeted {
                     Image(systemName: "arrow.right.circle.fill")
@@ -507,13 +555,16 @@ private struct PlanSidebarRow: View {
                 }
             }
             .padding(.vertical, 2)
-            .padding(.horizontal, 4)
+            .padding(.horizontal, 6)
             .background(
-                RoundedRectangle(cornerRadius: 6)
-                    .fill(isTargeted ? Color.from(string: plan.color).opacity(0.18) : Color.clear)
+                RoundedRectangle(cornerRadius: 7)
+                    .fill(isTargeted ? Color.from(string: plan.color).opacity(0.12) : Color.clear)
             )
+            .contentShape(RoundedRectangle(cornerRadius: 7))
             .animation(.taskToolQuickFeedback, value: isTargeted)
         }
+        .buttonStyle(.plain)
+        .listRowBackground(isSelected ? Color.accentColor.opacity(0.12) : nil)
         .onDrop(of: [.text], isTargeted: $isTargeted) { providers in
             onDrop(providers)
         }
@@ -1340,7 +1391,7 @@ struct TaskCard: View {
 /// Sheet shown when tapping a bundle container card. Lists the tasks bundled inside it, letting
 /// the user rename the bundle, open a child task individually, or un-bundle a task (which
 /// dissolves the whole bundle if only one task would remain — see `TaskStore.removeTaskFromBundle`).
-private struct BundleDetailView: View {
+struct BundleDetailView: View {
     let bundle: Task
     @Environment(\.dismiss) var dismiss
     @EnvironmentObject var taskStore: TaskStore

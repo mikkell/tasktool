@@ -231,6 +231,95 @@ final class TaskStoreTests: XCTestCase {
         XCTAssertEqual(taskStore.tasks.first?.title, "Task A")
     }
 
+    func testCreateTaskInDoneStatusRecordsCompletionTime() throws {
+        try taskStore.createPlan(Plan(name: "Work"))
+        try taskStore.createTask(Task(title: "Already done", plan: "Work", status: "Done"))
+
+        XCTAssertNotNil(taskStore.tasks.first?.completedAt)
+        let contents = try String(contentsOf: tempDir.appendingPathComponent("Work/already-done.md"))
+        XCTAssertTrue(contents.contains("completed_at:"))
+    }
+
+    func testOutlookCaptureCreatesInboxPlanAndTask() throws {
+        let message = OutlookEmailMessage(
+            subject: "Review the contract",
+            sender: "Alex <alex@example.com>",
+            date: "Fri, 9 Oct 2026 10:00:00 +0200"
+        )
+
+        let task = try taskStore.createInboxTask(for: message)
+
+        XCTAssertEqual(task.plan, "Inbox")
+        XCTAssertEqual(task.status, "To Do")
+        XCTAssertEqual(task.title, "Review the contract")
+        XCTAssertEqual(task.tags, ["E-Mail"])
+        XCTAssertTrue(task.body.contains("From: Alex <alex@example.com>"))
+        XCTAssertTrue(taskStore.settings.availableTags.contains("E-Mail"))
+        XCTAssertTrue(FileManager.default.fileExists(
+            atPath: tempDir.appendingPathComponent("Inbox/plan.yaml").path
+        ))
+    }
+
+    func testOutlookCaptureUsesExistingInboxAndFirstNonDoneStatus() throws {
+        try taskStore.createPlan(Plan(name: "inbox", statuses: [
+            Plan.TaskStatus(name: "Waiting", color: "orange", order: 0),
+            Plan.TaskStatus(name: "Done", color: "green", order: 1)
+        ]))
+
+        let task = try taskStore.createInboxTask(
+            for: OutlookEmailMessage(subject: "Follow up", sender: nil, date: nil)
+        )
+
+        XCTAssertEqual(task.plan, "inbox")
+        XCTAssertEqual(task.status, "Waiting")
+        XCTAssertEqual(taskStore.plans.count, 1)
+    }
+
+    func testOutlookEmailDropCreatesInboxTaskWithBody() throws {
+        let emailURL = tempDir.appendingPathComponent("message.eml")
+        let email = """
+        From: Alex <alex@example.com>
+        Subject: Review the contract
+        Date: Fri, 9 Oct 2026 10:00:00 +0200
+
+        Include this message body in the task.
+        """
+        try Data(email.utf8).write(to: emailURL)
+
+        taskStore.captureOutlookEmail(data: try Data(contentsOf: emailURL))
+
+        let task = try XCTUnwrap(taskStore.tasks.first)
+        XCTAssertEqual(task.plan, "Inbox")
+        XCTAssertEqual(task.title, "Review the contract")
+        XCTAssertEqual(task.tags, ["E-Mail"])
+        XCTAssertTrue(task.body.contains("From: Alex <alex@example.com>"))
+        XCTAssertTrue(task.body.contains("Date: Fri, 9 Oct 2026 10:00:00 +0200"))
+        XCTAssertTrue(task.body.contains("Include this message body in the task."))
+        XCTAssertEqual(taskStore.outlookCaptureNotice?.isError, false)
+    }
+
+    func testCompletionTimeRefreshesAfterTaskIsReopenedAndCompletedAgain() throws {
+        try taskStore.createPlan(Plan(name: "Work"))
+        try taskStore.createTask(Task(title: "Repeat completion", plan: "Work", status: "To Do"))
+
+        var task = taskStore.tasks[0]
+        task.status = "Done"
+        try taskStore.updateTask(task)
+        XCTAssertNotNil(taskStore.tasks.first?.completedAt)
+
+        task = taskStore.tasks[0]
+        let previousCompletion = Date(timeIntervalSince1970: 1_000)
+        task.completedAt = previousCompletion
+        task.status = "To Do"
+        try taskStore.updateTask(task)
+        XCTAssertEqual(taskStore.tasks.first?.completedAt, previousCompletion)
+
+        task = taskStore.tasks[0]
+        task.status = "Done"
+        try taskStore.updateTask(task)
+        XCTAssertGreaterThan(try XCTUnwrap(taskStore.tasks.first?.completedAt), previousCompletion)
+    }
+
     func testCreateTaskInCorrectPlanFolder() throws {
         try taskStore.createPlan(Plan(name: "Work", color: "blue"))
         try taskStore.createPlan(Plan(name: "Personal", color: "green"))
@@ -679,6 +768,22 @@ final class TaskStoreTests: XCTestCase {
 
         try taskStore.archiveDoneTasks(for: plan, tasks: [task])
         XCTAssertEqual(taskStore.tasks.count, 0)
+    }
+
+    func testArchivedTasksRemainAvailableForOverviewCompletionMetrics() throws {
+        let plan = Plan(name: "Work")
+        try taskStore.createPlan(plan)
+        try taskStore.createTask(Task(title: "Completed and archived", plan: "Work", status: "Done"))
+
+        try taskStore.archiveDoneTasks(for: plan, tasks: taskStore.tasks)
+
+        let fresh = TaskStore()
+        fresh.storageURL = tempDir
+        fresh.loadAllData()
+
+        XCTAssertEqual(fresh.archivedTasks.count, 1)
+        XCTAssertNotNil(fresh.archivedTasks.first?.completedAt)
+        XCTAssertTrue(fresh.tasks.isEmpty)
     }
 
     func testArchiveCreatesArchivedFolderIfMissing() throws {
@@ -1188,5 +1293,3 @@ final class TaskStoreTests: XCTestCase {
         XCTAssertEqual(updatedMoving.order, 1)
     }
 }
-
-

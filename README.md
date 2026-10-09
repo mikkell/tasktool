@@ -18,6 +18,7 @@ A powerful, file-based task management application for macOS that stores all dat
 - 🔍 **Drag & Drop** — Move tasks between status columns and between plans, or reorder them within a column
 - 🧩 **Task Bundling** — Drag one task card onto another and hold for 3 seconds to bundle them into a group card; a quicker drop instead reorders the dragged task next to it. Expand a bundle to view/manage each task, or remove one to unbundle (auto-dissolves when only one task remains). Each bundled task can have its own due date, set directly from the bundle view; the bundle's card on the board shows the earliest due date among its bundled tasks
 - 📦 **Archive** — Move completed tasks into a named subfolder under `Archived/` (defaults to the current date), so a batch of tasks done together stays grouped for later review
+- ✉️ **Outlook Capture** — Send a selected Outlook message to TaskTool's Inbox plan with its subject, sender, and received date
 - 💻 **CLI-Friendly** — All files are plain text; manipulate with `grep`, `sed`, LLMs, or any editor
 - 🔗 **Obsidian Compatible** — Full YAML 1.2 frontmatter compatibility via [Yams](https://github.com/jpsim/Yams)
 - ☁️ **OneDrive / cloud-folder safe** — Hardened file writes and file-watcher debouncing prevent sync conflicts
@@ -99,14 +100,16 @@ TaskTool/
 ├── TaskTool/
 │   ├── TaskToolApp.swift       # App entry point and scene setup
 │   ├── ContentView.swift       # Kanban UI, drag-drop, sheets, alerts
+│   ├── OverviewView.swift      # Daily dashboard across plans
 │   ├── Task.swift              # Task model + fileName slug generation
 │   ├── Plan.swift              # Plan model + TaskStatus subtype
 │   ├── Settings.swift          # Global settings model
 │   ├── TaskStore.swift         # @MainActor state manager & file I/O
 │   ├── MarkdownParser.swift    # Markdown/YAML serialization (Yams)
+│   ├── OutlookEmailDrop.swift  # Outlook email drop parsing and feedback
 │   └── Assets.xcassets/
-├── TaskToolTests/              # 104 unit tests
-└── TaskToolUITests/            # 2 launch tests
+├── TaskToolTests/              # Unit tests
+└── TaskToolUITests/            # UI tests
 ```
 
 ### Core Components
@@ -320,6 +323,10 @@ If two tasks produce the same filename, the second receives a UUID suffix: `dupl
 | **⌘N** | New task in the selected plan |
 | **⌘S** | Save task (inside the task editor) |
 | **Esc** | Cancel / close current sheet |
+
+### Capture from Outlook
+
+Drag an email from Outlook onto the drop area at the top of the Overview dashboard. Outlook supplies a file URL for the dragged message; TaskTool reads its subject, sender, date, and readable text body to create a task in the `Inbox` plan, automatically tagged `E-Mail`. Plain text is preferred; HTML is converted to text when needed. Attachments are excluded, and the body is capped at 20,000 characters. If an Inbox plan does not exist, TaskTool creates one and uses its first non-completed status. This does not require Automator or permission to control Outlook.
 
 ## 💻 CLI Integration
 
