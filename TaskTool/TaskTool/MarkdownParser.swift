@@ -13,6 +13,11 @@ struct MarkdownParser {
     // Shared across all parse/serialize calls — ISO8601DateFormatter is relatively expensive
     // to instantiate and is not mutated after creation, so a single instance is safe to reuse.
     private static let iso8601Formatter = ISO8601DateFormatter()
+    private static let fractionalISO8601Formatter: ISO8601DateFormatter = {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return formatter
+    }()
 
     static func parseTask(from content: String, plan: String) throws -> Task {
         let components = splitFrontmatter(content)
@@ -26,7 +31,7 @@ struct MarkdownParser {
         }
         
         let title = extractTitle(from: components.body)
-        let body = extractBody(from: components.body)
+        let (body, legacyPingHistory) = extractLegacyPingHistory(from: extractBody(from: components.body))
         
         let id = metadata["id"] as? String ?? UUID().uuidString
         let status = metadata["status"] as? String ?? "To Do"
@@ -52,6 +57,13 @@ struct MarkdownParser {
         let updated = parseDate("updated")
         let dueDate = parseDateOptional("due_date")
         let completedAt = parseDateOptional("completed_at")
+        let storedPingHistory = (metadata["ping_history"] as? [Any] ?? []).compactMap { value -> Date? in
+            if let string = value as? String {
+                return parsePingTimestamp(string)
+            }
+            return value as? Date
+        }
+        let pingHistory = (storedPingHistory + legacyPingHistory).sorted()
         
         return Task(
             id: UUID(uuidString: id) ?? UUID(),
@@ -63,6 +75,7 @@ struct MarkdownParser {
             created: created,
             updated: updated,
             completedAt: completedAt,
+            pingHistory: pingHistory.isEmpty ? nil : pingHistory,
             body: body,
             bundledTaskIDs: bundledTaskIDs,
             parentBundleID: parentBundleID,
@@ -88,6 +101,13 @@ struct MarkdownParser {
 
         if let completedAt = task.completedAt {
             frontmatter += "\ncompleted_at: \(dateFormatter.string(from: completedAt))"
+        }
+
+        if let pingHistory = task.pingHistory, !pingHistory.isEmpty {
+            frontmatter += "\nping_history:"
+            for pingDate in pingHistory.sorted() {
+                frontmatter += "\n  - \(yamlQuote(fractionalISO8601Formatter.string(from: pingDate)))"
+            }
         }
         
         if !task.tags.isEmpty {
@@ -236,6 +256,44 @@ struct MarkdownParser {
         }
         
         return bodyLines.joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    static func containsLegacyPingRecords(in content: String) -> Bool {
+        let components = splitFrontmatter(content)
+        guard components.frontmatter != nil else { return false }
+        return !extractLegacyPingHistory(from: extractBody(from: components.body)).history.isEmpty
+    }
+
+    private static func extractLegacyPingHistory(from body: String) -> (body: String, history: [Date]) {
+        let legacyFormatter = DateFormatter()
+        legacyFormatter.locale = Locale(identifier: "en_US_POSIX")
+        legacyFormatter.calendar = Calendar(identifier: .gregorian)
+        legacyFormatter.timeZone = TimeZone(secondsFromGMT: 0)!
+        legacyFormatter.dateFormat = "yyyy-MM-dd HH:mm"
+
+        var remainingLines: [String] = []
+        var history: [Date] = []
+        let marker = "Reminder sent: "
+
+        for line in body.components(separatedBy: .newlines) {
+            guard line.hasPrefix(marker),
+                  let date = parsePingTimestamp(String(line.dropFirst(marker.count)), legacyFormatter: legacyFormatter) else {
+                remainingLines.append(line)
+                continue
+            }
+            history.append(date)
+        }
+
+        let cleanedBody = remainingLines
+            .joined(separator: "\n")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return (cleanedBody, history)
+    }
+
+    private static func parsePingTimestamp(_ string: String, legacyFormatter: DateFormatter? = nil) -> Date? {
+        fractionalISO8601Formatter.date(from: string)
+            ?? iso8601Formatter.date(from: string)
+            ?? legacyFormatter?.date(from: string)
     }
     
     /// Wraps a string in double quotes if it contains characters that would break YAML parsing.

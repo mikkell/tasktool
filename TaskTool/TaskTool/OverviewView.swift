@@ -218,7 +218,7 @@ struct OverviewView: View {
             VStack(alignment: .leading, spacing: 3) {
                 Text("Drop an Outlook email here")
                     .font(.headline)
-                Text("TaskTool adds its subject to Inbox; sender and date are saved as notes.")
+                Text("TaskTool adds its subject to Inbox; sender and date are saved in the task description.")
                     .font(.callout)
                     .foregroundStyle(.secondary)
             }
@@ -230,7 +230,7 @@ struct OverviewView: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(16)
         .background(
-            isOutlookEmailDropTargeted ? Color.accentColor.opacity(0.16) : Color.white.opacity(0.72),
+            isOutlookEmailDropTargeted ? Color.accentColor.opacity(0.16) : Color(nsColor: .controlBackgroundColor),
             in: RoundedRectangle(cornerRadius: 12)
         )
         .overlay {

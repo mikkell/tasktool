@@ -25,6 +25,20 @@ struct PendingUndo: Identifiable {
     let undo: () -> Void
 }
 
+enum TaskStoreError: LocalizedError {
+    case storageUnavailable
+    case taskNotFound(UUID)
+
+    var errorDescription: String? {
+        switch self {
+        case .storageUnavailable:
+            return "Task storage is unavailable."
+        case .taskNotFound(let id):
+            return "Task \(id.uuidString) is no longer available."
+        }
+    }
+}
+
 @MainActor
 class TaskStore: ObservableObject {
     @Published var plans: [Plan] = []
@@ -364,8 +378,7 @@ class TaskStore: ObservableObject {
         ) else { return }
         
         for taskFile in taskFiles where taskFile.pathExtension == "md" && taskFile.lastPathComponent != "plan.yaml" {
-            if let content = try? String(contentsOf: taskFile, encoding: .utf8),
-               let task = try? MarkdownParser.parseTask(from: content, plan: planName) {
+            if let task = loadTask(from: taskFile, planName: planName) {
                 tasks.append(task)
             }
         }
@@ -380,11 +393,27 @@ class TaskStore: ObservableObject {
         ) else { return }
 
         for case let taskFile as URL in enumerator where taskFile.pathExtension == "md" {
-            if let content = try? String(contentsOf: taskFile, encoding: .utf8),
-               let task = try? MarkdownParser.parseTask(from: content, plan: planName) {
+            if let task = loadTask(from: taskFile, planName: planName) {
                 archivedTasks.append(task)
             }
         }
+    }
+
+    private func loadTask(from taskFile: URL, planName: String) -> Task? {
+        guard let content = try? String(contentsOf: taskFile, encoding: .utf8),
+              let task = try? MarkdownParser.parseTask(from: content, plan: planName) else {
+            return nil
+        }
+
+        guard MarkdownParser.containsLegacyPingRecords(in: content) else { return task }
+        markSaving()
+        do {
+            let migratedContent = MarkdownParser.serializeTask(task)
+            try migratedContent.write(to: taskFile, atomically: false, encoding: .utf8)
+        } catch {
+            debugLog("⚠️ Failed to migrate ping history for '\(task.title)': \(error.localizedDescription)")
+        }
+        return task
     }
     
     func createPlan(_ plan: Plan) throws {
@@ -680,6 +709,23 @@ class TaskStore: ObservableObject {
         tasks[index] = updatedTask
 
         try? registerTags(updatedTask.tags)
+    }
+
+    @discardableResult
+    func recordPing(for task: Task, at date: Date = Date()) throws -> Task {
+        guard storageURL != nil else { throw TaskStoreError.storageUnavailable }
+        guard tasks.contains(where: { $0.id == task.id }) else {
+            throw TaskStoreError.taskNotFound(task.id)
+        }
+
+        var updatedTask = task
+        updatedTask.pingHistory = ((updatedTask.pingHistory ?? []) + [date]).sorted()
+        try updateTask(updatedTask)
+
+        guard let savedTask = tasks.first(where: { $0.id == task.id }) else {
+            throw TaskStoreError.taskNotFound(task.id)
+        }
+        return savedTask
     }
 
     func isDoneTask(_ task: Task) -> Bool {

@@ -17,6 +17,7 @@ struct Task: Identifiable, Codable, Hashable {
     var created: Date
     var updated: Date
     var completedAt: Date?
+    var pingHistory: [Date]?
     var body: String
     /// IDs of tasks bundled inside this task, when this task acts as a bundle "container" card
     /// created by drag-dropping one task onto another. Empty for ordinary, non-bundle tasks.
@@ -34,6 +35,7 @@ struct Task: Identifiable, Codable, Hashable {
 
     /// True when this task is a bundle container (holds one or more other tasks).
     var isBundle: Bool { !bundledTaskIDs.isEmpty }
+    var lastPingAt: Date? { pingHistory?.max() }
 
     init(
         id: UUID = UUID(),
@@ -45,6 +47,7 @@ struct Task: Identifiable, Codable, Hashable {
         created: Date = Date(),
         updated: Date = Date(),
         completedAt: Date? = nil,
+        pingHistory: [Date]? = nil,
         body: String = "",
         bundledTaskIDs: [UUID] = [],
         parentBundleID: UUID? = nil,
@@ -59,6 +62,7 @@ struct Task: Identifiable, Codable, Hashable {
         self.created = created
         self.updated = updated
         self.completedAt = completedAt
+        self.pingHistory = pingHistory
         self.body = body
         self.bundledTaskIDs = bundledTaskIDs
         self.parentBundleID = parentBundleID

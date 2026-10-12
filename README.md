@@ -225,7 +225,7 @@ updated: 2026-02-02T10:30:00Z
 - [ ] Implement responsive layout
 - [ ] Add testimonials
 
-## Notes
+## Description
 Coordinate with design team on final assets.
 ```
 
@@ -308,6 +308,7 @@ If two tasks produce the same filename, the second receives a UUID suffix: `dupl
 |--------|-----|
 | Create | **⌘N**, toolbar "New Task" button, or **+** in any column header |
 | Edit | Click a task card to open the detail sheet |
+| Record a reminder ping | Open task detail → "Ping" saves the timestamp in task metadata and shows the latest ping on the card; it does not send a message |
 | Move status | Drag task card to the target column |
 | Move to different plan | Drag task card to the plan name in the sidebar |
 | Reorder within a column | Drag a task card and drop it directly onto another card (a quick drop, released before the 3-second bundle hold) — it lands right before the card you dropped on |

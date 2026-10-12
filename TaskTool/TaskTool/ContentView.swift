@@ -22,11 +22,8 @@ extension Color {
         }
     }
 
-    /// Bright, fixed light-grey backdrop behind the Kanban board so the white/light task
-    /// columns and cards stand out with a bit of contrast. Deliberately a flat literal
-    /// (rather than a semantic system color) so it stays a consistent bright light-grey
-    /// regardless of appearance/accent settings.
-    static let taskToolBoardBackground = Color(white: 0.93)
+    /// Adaptive neutral backdrop behind the Kanban board and Overview dashboard.
+    static let taskToolBoardBackground = Color(nsColor: .underPageBackgroundColor)
 }
 
 extension Animation {
@@ -36,13 +33,13 @@ extension Animation {
     static let taskToolQuickFeedback = Animation.spring(response: 0.22, dampingFraction: 0.82)
 
     /// Layout reflow for task lists — insertion, removal, and reordering when a task
-    /// moves between statuses or plans. Slightly slower than `.taskToolQuickFeedback` so
-    /// the move/fade transitions stay legible, while still feeling snappy.
-    static let taskToolReflow = Animation.spring(response: 0.32, dampingFraction: 0.78)
+    /// moves between statuses or plans. A longer, more heavily damped spring keeps cards
+    /// gliding into place without the noticeable bounce of quick-feedback animations.
+    static let taskToolReflow = Animation.spring(response: 0.4, dampingFraction: 0.88, blendDuration: 0.1)
 }
 
 /// Markdown text-formatting helpers shared by every plain-text `TextEditor` (task
-/// description/notes fields) so Bold/Italic/Strikethrough keyboard shortcuts behave
+/// description fields) so Bold/Italic/Strikethrough keyboard shortcuts behave
 /// consistently everywhere.
 enum MarkdownFormatting {
     /// Wraps the current selection with `prefix`/`suffix` (e.g. `**` for bold), or — if
@@ -504,13 +501,15 @@ struct ContentView: View {
                             }
                         }
                         
-                        do {
-                            try taskStore.updateTask(task)
-                            debugLog("📦 Task '\(task.title)' moved to plan '\(targetPlan.name)'")
-                        } catch {
-                            // Revert in-memory state so the UI stays consistent with disk
-                            taskStore.tasks[taskIndex] = originalTask
-                            debugLog("❌ Failed to move task '\(task.title)': \(error.localizedDescription)")
+                        withAnimation(.taskToolReflow) {
+                            do {
+                                try taskStore.updateTask(task)
+                                debugLog("📦 Task '\(task.title)' moved to plan '\(targetPlan.name)'")
+                            } catch {
+                                // Revert in-memory state so the UI stays consistent with disk
+                                taskStore.tasks[taskIndex] = originalTask
+                                debugLog("❌ Failed to move task '\(task.title)': \(error.localizedDescription)")
+                            }
                         }
                     }
                 }
@@ -681,8 +680,7 @@ struct PlanDetailView: View {
                     }
                 }
             }
-            // Light-grey backdrop behind the board so the white/light Kanban columns and task
-            // cards stand out with more contrast, instead of blending into the window background.
+            // Adaptive backdrop separates the Kanban columns and task cards from the window.
             .background(Color.taskToolBoardBackground)
             // Forces SwiftUI to treat this as a fresh view instance whenever the selected plan
             // changes, resetting `@State` (search text, multi-select) instead of carrying stale
@@ -804,20 +802,24 @@ struct PlanDetailView: View {
     private func moveSelectedTasks(toPlan targetPlan: Plan) {
         let tasksToMove = selectedTasksList
         selectedTaskIDs.removeAll()
-        do {
-            try taskStore.moveTasks(tasksToMove, toPlan: targetPlan)
-        } catch {
-            debugLog("❌ Failed to move tasks to plan '\(targetPlan.name)': \(error.localizedDescription)")
+        withAnimation(.taskToolReflow) {
+            do {
+                try taskStore.moveTasks(tasksToMove, toPlan: targetPlan)
+            } catch {
+                debugLog("❌ Failed to move tasks to plan '\(targetPlan.name)': \(error.localizedDescription)")
+            }
         }
     }
     
     private func moveSelectedTasks(toStatus statusName: String) {
         let tasksToMove = selectedTasksList
         selectedTaskIDs.removeAll()
-        do {
-            try taskStore.moveTasks(tasksToMove, toStatus: statusName)
-        } catch {
-            debugLog("❌ Failed to move tasks to status '\(statusName)': \(error.localizedDescription)")
+        withAnimation(.taskToolReflow) {
+            do {
+                try taskStore.moveTasks(tasksToMove, toStatus: statusName)
+            } catch {
+                debugLog("❌ Failed to move tasks to status '\(statusName)': \(error.localizedDescription)")
+            }
         }
     }
     
@@ -859,6 +861,13 @@ struct KanbanColumn: View {
     /// How long a drag must hover continuously over a card before dropping on it bundles the
     /// two tasks together, rather than just reordering the dragged task to that position.
     private static let bundleActivationDelay: TimeInterval = 3.0
+
+    private var headerForegroundColor: Color {
+        switch plan.statuses.first(where: { $0.name == statusName })?.color.lowercased() {
+        case "yellow", "orange", "gray": return .black
+        default: return .white
+        }
+    }
     
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -867,16 +876,16 @@ struct KanbanColumn: View {
                 Text(title)
                     .font(.headline)
                     .fontWeight(.semibold)
-                    .foregroundColor(.white)
+                    .foregroundColor(headerForegroundColor)
                 
                 Spacer()
                 
                 Button(action: { showingNewTask = true }) {
                     Image(systemName: "plus")
                         .font(.caption)
-                        .foregroundColor(.white)
+                        .foregroundColor(headerForegroundColor)
                         .padding(6)
-                        .background(Color.white.opacity(0.2))
+                        .background(headerForegroundColor.opacity(0.14))
                         .cornerRadius(8)
                 }
                 .buttonStyle(.plain)
@@ -884,10 +893,10 @@ struct KanbanColumn: View {
                 
                 Text("\(tasks.count)")
                     .font(.caption)
-                    .foregroundColor(.white.opacity(0.8))
+                    .foregroundColor(headerForegroundColor.opacity(0.8))
                     .padding(.horizontal, 8)
                     .padding(.vertical, 4)
-                    .background(Color.white.opacity(0.2))
+                    .background(headerForegroundColor.opacity(0.14))
                     .cornerRadius(12)
                     .contentTransition(.numericText())
             }
@@ -923,10 +932,7 @@ struct KanbanColumn: View {
                                 }
                             }
                         )
-                            .transition(.asymmetric(
-                                insertion: .move(edge: .top).combined(with: .opacity),
-                                removal: .move(edge: .bottom).combined(with: .opacity)
-                            ))
+                            .transition(.scale(scale: 0.97).combined(with: .opacity))
                             .onTapGesture {
                                 if task.isBundle {
                                     selectedBundle = task
@@ -960,7 +966,7 @@ struct KanbanColumn: View {
         .cornerRadius(12)
         .overlay(
             RoundedRectangle(cornerRadius: 12)
-                .stroke(isTargeted ? color : Color.gray.opacity(0.3), lineWidth: isTargeted ? 3 : 1)
+                .stroke(isTargeted ? color : Color.primary.opacity(0.12), lineWidth: isTargeted ? 3 : 1)
         )
         .onDrop(of: [.text], isTargeted: $isTargeted) { providers in
             handleDrop(providers: providers)
@@ -1007,12 +1013,14 @@ struct KanbanColumn: View {
 
                 task.status = statusName
                 task.order = endOrder
-                do {
-                    try taskStore.updateTask(task)
-                } catch {
-                    // Revert in-memory state so the UI stays consistent with disk
-                    taskStore.tasks[taskIndex] = originalTask
-                    debugLog("❌ Failed to update status for '\(task.title)': \(error.localizedDescription)")
+                withAnimation(.taskToolReflow) {
+                    do {
+                        try taskStore.updateTask(task)
+                    } catch {
+                        // Revert in-memory state so the UI stays consistent with disk
+                        taskStore.tasks[taskIndex] = originalTask
+                        debugLog("❌ Failed to update status for '\(task.title)': \(error.localizedDescription)")
+                    }
                 }
             }
         }
@@ -1075,21 +1083,23 @@ struct KanbanColumn: View {
             guard let data = item as? Data,
                   let taskIdString = String(data: data, encoding: .utf8),
                   let taskId = UUID(uuidString: taskIdString),
-                  taskId != target.id,
-                  let draggedTask = taskStore.tasks.first(where: { $0.id == taskId }) else {
+                  taskId != target.id else {
                 return
             }
 
             DispatchQueue.main.async {
-                do {
-                    if wasArmedForBundle {
-                        try taskStore.bundleTask(draggedTask, onto: target)
-                    } else {
-                        try taskStore.reorderTask(draggedTask, before: target)
+                guard let draggedTask = taskStore.tasks.first(where: { $0.id == taskId }) else { return }
+                withAnimation(.taskToolReflow) {
+                    do {
+                        if wasArmedForBundle {
+                            try taskStore.bundleTask(draggedTask, onto: target)
+                        } else {
+                            try taskStore.reorderTask(draggedTask, before: target)
+                        }
+                    } catch {
+                        let action = wasArmedForBundle ? "bundle" : "reorder"
+                        debugLog("❌ Failed to \(action) '\(draggedTask.title)' onto '\(target.title)': \(error.localizedDescription)")
                     }
-                } catch {
-                    let action = wasArmedForBundle ? "bundle" : "reorder"
-                    debugLog("❌ Failed to \(action) '\(draggedTask.title)' onto '\(target.title)': \(error.localizedDescription)")
                 }
             }
         }
@@ -1324,6 +1334,16 @@ struct TaskCard: View {
                     }
                 }
                 .foregroundColor(dueDateColor)
+            }
+
+            if let lastPingAt = task.lastPingAt {
+                HStack(spacing: 4) {
+                    Image(systemName: "bell.badge")
+                        .font(.caption2)
+                    Text("Ping: \(lastPingAt.formatted(date: .abbreviated, time: .shortened))")
+                        .font(.caption2)
+                }
+                .foregroundColor(.secondary)
             }
         }
         .padding()
@@ -1731,7 +1751,7 @@ struct NewTaskView: View {
                         .focused($descriptionFocused)
                         .overlay(
                             RoundedRectangle(cornerRadius: 5)
-                                .stroke(descriptionFocused ? Color.accentColor : Color.gray.opacity(0.5),
+                                .stroke(descriptionFocused ? Color.accentColor : Color.primary.opacity(0.2),
                                         lineWidth: descriptionFocused ? 2 : 1)
                         )
                         .background(
@@ -1847,7 +1867,7 @@ struct NewTaskViewForStatus: View {
                         .focused($descriptionFocused)
                         .overlay(
                             RoundedRectangle(cornerRadius: 5)
-                                .stroke(descriptionFocused ? Color.accentColor : Color.gray.opacity(0.5),
+                                .stroke(descriptionFocused ? Color.accentColor : Color.primary.opacity(0.2),
                                         lineWidth: descriptionFocused ? 2 : 1)
                         )
                         .background(
@@ -2083,7 +2103,7 @@ private struct TaskImagesSection: View {
     }
 
     /// Imports any dropped/pasted/browsed image files into the plan's `attachments`
-    /// folder and appends a markdown image reference for each to the task's notes.
+    /// folder and appends a markdown image reference for each to the task description.
     /// Returns whether any image was accepted, for use as the drop-destination result.
     @discardableResult
     private func handleImageDrop(_ urls: [URL]) -> Bool {
@@ -2428,6 +2448,8 @@ struct TaskDetailView: View {
     @State private var editedTask: Task
     @State private var showError = false
     @State private var errorMessage = ""
+    @State private var taskIDCopied = false
+    @State private var pingRecorded = false
     @State private var hasDueDate: Bool
     @State private var subtasks: [SubTask]
     @State private var bodyNotes: String
@@ -2495,6 +2517,15 @@ struct TaskDetailView: View {
                     .fontWeight(.semibold)
                 
                 Spacer()
+
+                Button(action: recordPing) {
+                    Label(
+                        pingRecorded ? "Recorded" : "Ping",
+                        systemImage: pingRecorded ? "checkmark" : "bell.badge"
+                    )
+                }
+                .buttonStyle(.bordered)
+                .help("Record when you sent a reminder. The latest timestamp appears on the task card; no message is sent.")
                 
                 // Explicit close button mirroring the "Save" footer button (same
                 // `saveAndClose()` action, same Cmd+S shortcut) so users can quickly
@@ -2516,6 +2547,51 @@ struct TaskDetailView: View {
             // Content
             ScrollView {
                 VStack(alignment: .leading, spacing: 20) {
+                    // Keep the full stable identifier visible above the editable fields,
+                    // with both text selection and a one-click clipboard action.
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("Task ID")
+                            .font(.headline)
+                        HStack(spacing: 8) {
+                            Text(task.id.uuidString)
+                                .font(.system(.callout, design: .monospaced))
+                                .foregroundStyle(.secondary)
+                                .textSelection(.enabled)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+
+                            Button(action: copyTaskID) {
+                                Label(
+                                    taskIDCopied ? "Copied!" : "Copy",
+                                    systemImage: taskIDCopied ? "checkmark" : "doc.on.doc"
+                                )
+                            }
+                            .buttonStyle(.bordered)
+                            .help("Copy full task ID")
+                        }
+                    }
+
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("Ping History")
+                            .font(.headline)
+
+                        let pingHistory = (editedTask.pingHistory ?? []).sorted(by: >)
+                        if pingHistory.isEmpty {
+                            Text("No reminders recorded yet.")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        } else {
+                            ForEach(Array(pingHistory.enumerated()), id: \.offset) { _, pingDate in
+                                HStack(spacing: 6) {
+                                    Image(systemName: "bell.badge")
+                                        .font(.caption2)
+                                    Text(pingDate.formatted(date: .abbreviated, time: .shortened))
+                                        .font(.system(.caption, design: .monospaced))
+                                }
+                                .foregroundStyle(.secondary)
+                            }
+                        }
+                    }
+
                     // Title
                     VStack(alignment: .leading, spacing: 8) {
                         Text("Title")
@@ -2559,9 +2635,9 @@ struct TaskDetailView: View {
                         }
                     }
                     
-                    // Body / Notes
+                    // Description
                     VStack(alignment: .leading, spacing: 8) {
-                        Text("Notes")
+                        Text("Description")
                             .font(.headline)
                         TextEditor(text: $bodyNotes, selection: $bodyNotesSelection)
                             .frame(minHeight: 100)
@@ -2766,6 +2842,32 @@ struct TaskDetailView: View {
             if !editedTask.title.isEmpty {
                 saveAndClose()
             }
+        }
+    }
+
+    private func copyTaskID() {
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(task.id.uuidString, forType: .string)
+        taskIDCopied = true
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
+            taskIDCopied = false
+        }
+    }
+
+    private func recordPing() {
+        rebuildBody()
+        do {
+            let updatedTask = try taskStore.recordPing(for: editedTask)
+            editedTask = updatedTask
+            errorMessage = ""
+            showError = false
+            pingRecorded = true
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
+                pingRecorded = false
+            }
+        } catch {
+            errorMessage = "Failed to record ping: \(error.localizedDescription)"
+            showError = true
         }
     }
     
@@ -3086,7 +3188,7 @@ struct TagInputView: View {
                                 Text(tag)
                                     .padding(.horizontal, 8)
                                     .padding(.vertical, 4)
-                                    .background(Color.gray.opacity(0.15))
+                                    .background(Color(nsColor: .controlColor))
                                     .cornerRadius(4)
                             }
                             .buttonStyle(.plain)

@@ -215,6 +215,27 @@ final class MarkdownParserTests: XCTestCase {
         XCTAssertEqual(parsed.order, original.order)
     }
 
+    func testRoundtripTaskWithPingHistory() throws {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        let firstPing = try XCTUnwrap(formatter.date(from: "2026-10-12T12:36:58.778Z"))
+        let secondPing = try XCTUnwrap(formatter.date(from: "2026-10-12T12:44:00.000Z"))
+        let original = Task(
+            title: "Ping History Task",
+            plan: "Work",
+            status: "To Do",
+            pingHistory: [firstPing, secondPing],
+            body: "Description"
+        )
+
+        let serialized = MarkdownParser.serializeTask(original)
+        let parsed = try MarkdownParser.parseTask(from: serialized, plan: "Work")
+
+        XCTAssertTrue(serialized.contains("ping_history:"))
+        XCTAssertEqual(parsed.pingHistory, [firstPing, secondPing])
+        XCTAssertEqual(parsed.body, "Description")
+    }
+
     func testParseTaskWithoutOrderDefaultsToZero() throws {
         let content = """
         ---

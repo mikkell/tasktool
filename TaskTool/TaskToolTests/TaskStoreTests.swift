@@ -398,6 +398,59 @@ final class TaskStoreTests: XCTestCase {
         XCTAssertEqual(taskStore.tasks.first?.status, "In Progress")
     }
 
+    func testRecordPingAddsTimestampToHistoryWithoutChangingDescription() throws {
+        try taskStore.createPlan(Plan(name: "Work", color: "blue"))
+        let task = Task(title: "Ping Task", plan: "Work", status: "To Do", body: "Initial description")
+        try taskStore.createTask(task)
+
+        let inputFormatter = ISO8601DateFormatter()
+        inputFormatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        let firstDate = try XCTUnwrap(inputFormatter.date(from: "2026-10-12T12:27:06.083Z"))
+        let secondDate = try XCTUnwrap(inputFormatter.date(from: "2026-10-12T12:45:10.125Z"))
+
+        let firstPing = try taskStore.recordPing(for: task, at: firstDate)
+        let updatedTask = try taskStore.recordPing(for: firstPing, at: secondDate)
+
+        XCTAssertEqual(updatedTask.body, "Initial description")
+        XCTAssertEqual(updatedTask.pingHistory, [firstDate, secondDate])
+        XCTAssertEqual(taskStore.tasks.first(where: { $0.id == task.id })?.body, updatedTask.body)
+
+        let taskFile = tempDir.appendingPathComponent("Work/ping-task.md")
+        let contents = try String(contentsOf: taskFile, encoding: .utf8)
+        XCTAssertTrue(contents.contains("ping_history:"))
+        XCTAssertFalse(contents.contains("Reminder sent:"))
+        let loadedTask = try MarkdownParser.parseTask(from: contents, plan: "Work")
+        XCTAssertEqual(loadedTask.pingHistory, [firstDate, secondDate])
+    }
+
+    func testLoadTasksMigratesLegacyPingEntriesIntoTaskMetadata() throws {
+        try taskStore.createPlan(Plan(name: "Work", color: "blue"))
+        let task = Task(
+            title: "Legacy Ping Task",
+            plan: "Work",
+            status: "To Do",
+            body: """
+            Initial description
+
+            Reminder sent: 2026-10-12T12:36:58.778Z
+
+            Reminder sent: 2026-10-12 12:44
+            """
+        )
+        try taskStore.createTask(task)
+
+        taskStore.loadAllData()
+
+        let migratedTask = try XCTUnwrap(taskStore.tasks.first(where: { $0.id == task.id }))
+        XCTAssertEqual(migratedTask.body, "Initial description")
+        XCTAssertEqual(migratedTask.pingHistory?.count, 2)
+
+        let taskFile = tempDir.appendingPathComponent("Work/legacy-ping-task.md")
+        let contents = try String(contentsOf: taskFile, encoding: .utf8)
+        XCTAssertTrue(contents.contains("ping_history:"))
+        XCTAssertFalse(contents.contains("Reminder sent:"))
+    }
+
     func testUpdateTaskMoveToNewPlan_NewFileExists() throws {
         try taskStore.createPlan(Plan(name: "Work", color: "blue"))
         try taskStore.createPlan(Plan(name: "Personal", color: "green"))
