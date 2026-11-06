@@ -536,7 +536,7 @@ private struct PlanSidebarRow: View {
             HStack {
                 ZStack {
                     Circle()
-                        .fill(Color.from(string: plan.color))
+                        .fill(Color.fillForWhiteText(planColor: plan.color))
                         .frame(width: 18, height: 18)
                     if let shortcutNumber {
                         Text("\(shortcutNumber)")
@@ -862,11 +862,14 @@ struct KanbanColumn: View {
     /// two tasks together, rather than just reordering the dragged task to that position.
     private static let bundleActivationDelay: TimeInterval = 3.0
 
-    private var headerForegroundColor: Color {
-        switch plan.statuses.first(where: { $0.name == statusName })?.color.lowercased() {
-        case "yellow", "orange", "gray": return .black
-        default: return .white
-        }
+    private var statusColorName: String? {
+        plan.statuses.first(where: { $0.name == statusName })?.color
+    }
+
+    private var headerForegroundColor: Color { .white }
+
+    private var headerBackgroundColor: Color {
+        statusColorName.map { Color.fillForWhiteText(planColor: $0) } ?? color
     }
     
     var body: some View {
@@ -893,7 +896,7 @@ struct KanbanColumn: View {
                 
                 Text("\(tasks.count)")
                     .font(.caption)
-                    .foregroundColor(headerForegroundColor.opacity(0.8))
+                    .foregroundColor(headerForegroundColor)
                     .padding(.horizontal, 8)
                     .padding(.vertical, 4)
                     .background(headerForegroundColor.opacity(0.14))
@@ -901,7 +904,7 @@ struct KanbanColumn: View {
                     .contentTransition(.numericText())
             }
             .padding()
-            .background(color)
+            .background(headerBackgroundColor)
             
             Divider()
             
@@ -1137,24 +1140,10 @@ struct TaskCard: View {
     }
 
     // Matches markdown image references, e.g. "![alt](attachments/photo.png)", so the
-    // card preview can strip them out and show an icon/count instead of raw markdown.
+    // card can count them and show an icon/count instead of raw markdown.
     private static let imageMarkdownRegex = try? NSRegularExpression(
         pattern: #"!\[[^\]]*\]\([^\)]+\)"#
     )
-
-    /// `task.body` with any markdown image references and subtask checklist lines
-    /// removed, and surrounding whitespace collapsed, for the plain-text preview
-    /// shown on the card (checklist lines get their own checkbox rendering instead).
-    private var bodyPreviewWithoutImages: String {
-        guard let regex = Self.imageMarkdownRegex else { return task.body }
-        let range = NSRange(task.body.startIndex..., in: task.body)
-        let stripped = regex.stringByReplacingMatches(in: task.body, range: range, withTemplate: "")
-        return stripped
-            .components(separatedBy: .newlines)
-            .map { $0.trimmingCharacters(in: .whitespaces) }
-            .filter { !$0.isEmpty && !$0.hasPrefix("- [ ]") && !$0.hasPrefix("- [x]") && !$0.hasPrefix("- [X]") }
-            .joined(separator: " ")
-    }
 
     /// Number of images embedded in the task's body (markdown image references).
     private var imageCount: Int {
@@ -1209,11 +1198,11 @@ struct TaskCard: View {
     }
 
     private var dueDateColor: Color {
-        if isDone { return .green }
+        if isDone { return .taskToolSuccess }
         switch dueUrgency {
-        case .overdue, .today: return .red
-        case .tomorrow:        return Color(nsColor: .systemOrange)
-        case .upcoming:        return .secondary
+        case .overdue, .today: return .taskToolDanger
+        case .tomorrow:        return .taskToolWarning
+        case .upcoming:        return .taskToolSecondaryText
         }
     }
 
@@ -1231,7 +1220,7 @@ struct TaskCard: View {
             HStack(alignment: .top) {
                 Text("#\(task.id.uuidString.prefix(8))")
                     .font(.system(.caption2, design: .monospaced))
-                    .foregroundColor(.secondary)
+                    .foregroundColor(.taskToolSecondaryText)
                     .padding(.horizontal, 6)
                     .padding(.vertical, 2)
                     .background(Color.secondary.opacity(0.15))
@@ -1265,31 +1254,24 @@ struct TaskCard: View {
                 .foregroundColor(.accentColor)
             }
 
-            if !bodyPreviewWithoutImages.isEmpty {
-                Text(bodyPreviewWithoutImages)
-                    .font(.caption)
-                    .foregroundColor(.secondary)
-                    .lineLimit(2)
-            }
-
             if !subtaskItems.isEmpty {
                 VStack(alignment: .leading, spacing: 3) {
                     ForEach(Array(subtaskItems.prefix(3).enumerated()), id: \.offset) { _, item in
                         HStack(alignment: .top, spacing: 4) {
                             Image(systemName: item.isCompleted ? "checkmark.square.fill" : "square")
                                 .font(.caption)
-                                .foregroundColor(item.isCompleted ? .accentColor : .secondary)
+                                .foregroundColor(item.isCompleted ? .accentColor : .taskToolSecondaryText)
                             Text(item.title)
                                 .font(.caption)
-                                .foregroundColor(item.isCompleted ? .secondary : .primary)
-                                .strikethrough(item.isCompleted, color: .secondary)
+                                .foregroundColor(item.isCompleted ? .taskToolSecondaryText : .primary)
+                                .strikethrough(item.isCompleted, color: .taskToolSecondaryText)
                                 .lineLimit(1)
                         }
                     }
                     if subtaskItems.count > 3 {
                         Text("+\(subtaskItems.count - 3) more")
                             .font(.caption2)
-                            .foregroundColor(.secondary)
+                            .foregroundColor(.taskToolSecondaryText)
                     }
                 }
             }
@@ -1303,7 +1285,7 @@ struct TaskCard: View {
                             .font(.caption)
                     }
                 }
-                .foregroundColor(.secondary)
+                .foregroundColor(.taskToolSecondaryText)
             }
 
             if !task.tags.isEmpty {
@@ -1330,7 +1312,7 @@ struct TaskCard: View {
                     if task.isBundle && task.dueDate == nil {
                         Text("(earliest)")
                             .font(.caption2)
-                            .foregroundColor(.secondary)
+                            .foregroundColor(.taskToolSecondaryText)
                     }
                 }
                 .foregroundColor(dueDateColor)
@@ -1343,7 +1325,7 @@ struct TaskCard: View {
                     Text("Ping: \(lastPingAt.formatted(date: .abbreviated, time: .shortened))")
                         .font(.caption2)
                 }
-                .foregroundColor(.secondary)
+                .foregroundColor(.taskToolSecondaryText)
             }
         }
         .padding()
@@ -1453,7 +1435,7 @@ struct BundleDetailView: View {
 
             Text("\(children.count) task\(children.count == 1 ? "" : "s") bundled together")
                 .font(.caption)
-                .foregroundColor(.secondary)
+                .foregroundColor(.taskToolSecondaryText)
 
             Divider()
 
@@ -1471,7 +1453,7 @@ struct BundleDetailView: View {
                                     if !child.tags.isEmpty {
                                         Text(child.tags.joined(separator: ", "))
                                             .font(.caption2)
-                                            .foregroundColor(.secondary)
+                                            .foregroundColor(.taskToolSecondaryText)
                                     }
                                 }
                                 .contentShape(Rectangle())
@@ -1557,7 +1539,7 @@ private struct BundleChildDueDateControl: View {
                         .font(.caption2)
                 }
             }
-            .foregroundColor(liveChild.dueDate == nil ? .secondary : .accentColor)
+            .foregroundColor(liveChild.dueDate == nil ? .taskToolSecondaryText : .accentColor)
         }
         .buttonStyle(.plain)
         .help(liveChild.dueDate == nil ? "Set Due Date" : "Change Due Date")
@@ -1622,7 +1604,7 @@ private struct ArchiveTasksSheet: View {
             VStack(alignment: .leading, spacing: 4) {
                 Text("Folder Name")
                     .font(.caption)
-                    .foregroundColor(.secondary)
+                    .foregroundColor(.taskToolSecondaryText)
                 TextField("Folder name", text: $folderName)
                     .textFieldStyle(.roundedBorder)
                     .focused($isFocused)
@@ -1683,7 +1665,7 @@ struct NewPlanView: View {
             
             if showError {
                 Text(errorMessage)
-                    .foregroundColor(.red)
+                    .foregroundColor(.taskToolDanger)
                     .font(.caption)
             }
             
@@ -1793,7 +1775,7 @@ struct NewTaskView: View {
 
             if showError {
                 Text(errorMessage)
-                    .foregroundColor(.red)
+                    .foregroundColor(.taskToolDanger)
                     .font(.caption)
             }
 
@@ -1909,7 +1891,7 @@ struct NewTaskViewForStatus: View {
 
             if showError {
                 Text(errorMessage)
-                    .foregroundColor(.red)
+                    .foregroundColor(.taskToolDanger)
                     .font(.caption)
             }
 
@@ -2097,7 +2079,7 @@ private struct TaskImagesSection: View {
             } else if !isAddingImage {
                 Text("No images — click \"Add Image\" to browse, drop, or paste one")
                     .font(.caption)
-                    .foregroundColor(.secondary)
+                    .foregroundColor(.taskToolSecondaryText)
             }
         }
     }
@@ -2249,7 +2231,7 @@ private struct ImageThumbnail: View {
                 .foregroundColor(.secondary)
             Text(alt.isEmpty ? "Image" : alt)
                 .font(.caption2)
-                .foregroundColor(.secondary)
+                .foregroundColor(.taskToolSecondaryText)
         }
         .frame(width: 120, height: 90)
         .background(Color.secondary.opacity(0.1))
@@ -2457,6 +2439,7 @@ struct TaskDetailView: View {
     @State private var newSubtaskTitle = ""
     @FocusState private var subtaskFieldFocused: Bool
     @FocusState private var notesFocused: Bool
+    @AppStorage("descriptionShowsPreview") private var descriptionShowsPreview = false
 
     private struct SubTask: Identifiable {
         var id = UUID()
@@ -2578,7 +2561,7 @@ struct TaskDetailView: View {
                         if pingHistory.isEmpty {
                             Text("No reminders recorded yet.")
                                 .font(.caption)
-                                .foregroundStyle(.secondary)
+                                .foregroundStyle(Color.taskToolSecondaryText)
                         } else {
                             ForEach(Array(pingHistory.enumerated()), id: \.offset) { _, pingDate in
                                 HStack(spacing: 6) {
@@ -2587,7 +2570,7 @@ struct TaskDetailView: View {
                                     Text(pingDate.formatted(date: .abbreviated, time: .shortened))
                                         .font(.system(.caption, design: .monospaced))
                                 }
-                                .foregroundStyle(.secondary)
+                                .foregroundStyle(Color.taskToolSecondaryText)
                             }
                         }
                     }
@@ -2637,17 +2620,35 @@ struct TaskDetailView: View {
                     
                     // Description
                     VStack(alignment: .leading, spacing: 8) {
-                        Text("Description")
-                            .font(.headline)
-                        TextEditor(text: $bodyNotes, selection: $bodyNotesSelection)
-                            .frame(minHeight: 100)
-                            .border(Color.secondary.opacity(0.2))
-                            .focused($notesFocused)
-                            .onChange(of: bodyNotes) { _, _ in rebuildBody() }
-                            .autocorrectionDisabled(false)
-                            .background(
-                                MarkdownFormattingShortcuts(text: $bodyNotes, selection: $bodyNotesSelection, isActive: notesFocused)
-                            )
+                        HStack {
+                            Text("Description")
+                                .font(.headline)
+                            Spacer()
+                            Picker("Description view", selection: $descriptionShowsPreview) {
+                                Text("Markdown").tag(false)
+                                Text("Preview").tag(true)
+                            }
+                            .pickerStyle(.segmented)
+                            .labelsHidden()
+                            .fixedSize()
+                            .help("Switch between raw Markdown and a rendered preview")
+                        }
+                        if descriptionShowsPreview {
+                            MarkdownPreview(text: bodyNotes)
+                                .padding(8)
+                                .frame(minHeight: 100, alignment: .topLeading)
+                                .border(Color.secondary.opacity(0.2))
+                        } else {
+                            TextEditor(text: $bodyNotes, selection: $bodyNotesSelection)
+                                .frame(minHeight: 100)
+                                .border(Color.secondary.opacity(0.2))
+                                .focused($notesFocused)
+                                .onChange(of: bodyNotes) { _, _ in rebuildBody() }
+                                .autocorrectionDisabled(false)
+                                .background(
+                                    MarkdownFormattingShortcuts(text: $bodyNotes, selection: $bodyNotesSelection, isActive: notesFocused)
+                                )
+                        }
                     }
 
                     // Images
@@ -2700,7 +2701,7 @@ struct TaskDetailView: View {
                                 let done = subtasks.filter(\.isCompleted).count
                                 Text("\(done)/\(subtasks.count)")
                                     .font(.caption)
-                                    .foregroundColor(.secondary)
+                                    .foregroundColor(.taskToolSecondaryText)
                             }
                         }
 
@@ -2796,10 +2797,10 @@ struct TaskDetailView: View {
                     VStack(alignment: .leading, spacing: 4) {
                         Text("Created: \(task.created, style: .date) at \(task.created, style: .time)")
                             .font(.caption)
-                            .foregroundColor(.secondary)
+                            .foregroundColor(.taskToolSecondaryText)
                         Text("Updated: \(task.updated, style: .date) at \(task.updated, style: .time)")
                             .font(.caption)
-                            .foregroundColor(.secondary)
+                            .foregroundColor(.taskToolSecondaryText)
                     }
                 }
                 .padding()
@@ -2822,7 +2823,7 @@ struct TaskDetailView: View {
                 
                 if showError {
                     Text(errorMessage)
-                        .foregroundColor(.red)
+                        .foregroundColor(.taskToolDanger)
                         .font(.caption)
                 }
                 
@@ -2996,7 +2997,7 @@ struct EditStatusesView: View {
             HStack {
                 if showError {
                     Text(errorMessage)
-                        .foregroundColor(.red)
+                        .foregroundColor(.taskToolDanger)
                         .font(.caption)
                 }
                 
@@ -3080,7 +3081,7 @@ struct EditPlanView: View {
             
             if showError {
                 Text(errorMessage)
-                    .foregroundColor(.red)
+                    .foregroundColor(.taskToolDanger)
                     .font(.caption)
             }
             
@@ -3181,7 +3182,7 @@ struct TagInputView: View {
                 VStack(alignment: .leading, spacing: 4) {
                     Text("Existing tags")
                         .font(.caption)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(Color.taskToolSecondaryText)
                     FlowLayoutHStack {
                         ForEach(availableTagsNotOnTask, id: \.self) { tag in
                             Button(action: { addTag(tag) }) {

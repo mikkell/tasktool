@@ -7,6 +7,18 @@
 
 import Foundation
 
+struct Habit: Codable, Identifiable, Equatable {
+    var id: String
+    var name: String
+    var completedDates: [String] // Day keys formatted yyyy-MM-dd
+
+    init(id: String = UUID().uuidString, name: String, completedDates: [String] = []) {
+        self.id = id
+        self.name = name
+        self.completedDates = completedDates
+    }
+}
+
 struct Settings: Codable {
     var planOrder: [String] // Array of plan names in display order
     var availableTags: [String] // Global registry of tags, reusable across all tasks
@@ -14,6 +26,7 @@ struct Settings: Codable {
     var overviewFocusDate: String?
     var overviewFocusNote: String
     var overviewFocusTaskIDs: [String]
+    var habits: [Habit]
 
     init(
         planOrder: [String] = [],
@@ -21,7 +34,8 @@ struct Settings: Codable {
         overviewSelectedPlanNames: [String]? = nil,
         overviewFocusDate: String? = nil,
         overviewFocusNote: String = "",
-        overviewFocusTaskIDs: [String] = []
+        overviewFocusTaskIDs: [String] = [],
+        habits: [Habit] = []
     ) {
         self.planOrder = planOrder
         self.availableTags = availableTags
@@ -29,5 +43,6 @@ struct Settings: Codable {
         self.overviewFocusDate = overviewFocusDate
         self.overviewFocusNote = overviewFocusNote
         self.overviewFocusTaskIDs = overviewFocusTaskIDs
+        self.habits = habits
     }
 }

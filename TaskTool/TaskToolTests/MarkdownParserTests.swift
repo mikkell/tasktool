@@ -479,4 +479,16 @@ final class MarkdownParserTests: XCTestCase {
         XCTAssertEqual(parsed.overviewFocusNote, original.overviewFocusNote)
         XCTAssertEqual(parsed.overviewFocusTaskIDs, original.overviewFocusTaskIDs)
     }
+
+    func testRoundtripHabits() throws {
+        let original = Settings(habits: [
+            Habit(id: "habit-1", name: "Read: 20 pages", completedDates: ["2026-10-07", "2026-10-08"]),
+            Habit(id: "habit-2", name: "Stretch")
+        ])
+
+        let parsed = try MarkdownParser.parseSettings(
+            from: MarkdownParser.serializeSettings(original)
+        )
+        XCTAssertEqual(parsed.habits, original.habits)
+    }
 }

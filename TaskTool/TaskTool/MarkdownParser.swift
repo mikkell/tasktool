@@ -344,6 +344,22 @@ struct MarkdownParser {
         }
         let overviewFocusNote = metadata["overview_focus_note"] as? String ?? ""
         let overviewFocusTaskIDs = metadata["overview_focus_task_ids"] as? [String] ?? []
+        let habits = (metadata["habits"] as? [[String: Any]] ?? []).compactMap { entry -> Habit? in
+            guard let name = entry["name"] as? String, !name.isEmpty else { return nil }
+            let id = entry["id"] as? String ?? UUID().uuidString
+            let dates = (entry["completed_dates"] as? [Any] ?? []).compactMap { value -> String? in
+                if let string = value as? String { return string }
+                if let date = value as? Date {
+                    let formatter = DateFormatter()
+                    formatter.calendar = Calendar(identifier: .gregorian)
+                    formatter.timeZone = TimeZone(secondsFromGMT: 0)
+                    formatter.dateFormat = "yyyy-MM-dd"
+                    return formatter.string(from: date)
+                }
+                return nil
+            }
+            return Habit(id: id, name: name, completedDates: dates)
+        }
         
         return Settings(
             planOrder: planOrder,
@@ -351,7 +367,8 @@ struct MarkdownParser {
             overviewSelectedPlanNames: overviewSelectedPlanNames,
             overviewFocusDate: overviewFocusDate,
             overviewFocusNote: overviewFocusNote,
-            overviewFocusTaskIDs: overviewFocusTaskIDs
+            overviewFocusTaskIDs: overviewFocusTaskIDs,
+            habits: habits
         )
     }
     
@@ -400,6 +417,22 @@ struct MarkdownParser {
             yaml += "overview_focus_task_ids:\n"
             for taskID in settings.overviewFocusTaskIDs {
                 yaml += "  - \(yamlQuote(taskID))\n"
+            }
+        }
+        if !settings.habits.isEmpty {
+            yaml += "habits:\n"
+            for habit in settings.habits {
+                yaml += "  - id: \(yamlQuote(habit.id))\n"
+                yaml += "    name: \(yamlQuote(habit.name))\n"
+                if habit.completedDates.isEmpty {
+                    yaml += "    completed_dates: []\n"
+                } else {
+                    yaml += "    completed_dates:\n"
+                    // Quoted so Yams keeps day keys as strings instead of Date values.
+                    for date in habit.completedDates.sorted() {
+                        yaml += "      - \"\(date)\"\n"
+                    }
+                }
             }
         }
         

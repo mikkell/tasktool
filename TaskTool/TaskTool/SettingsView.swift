@@ -148,7 +148,7 @@ struct TagsSettingsTab: View {
         VStack(alignment: .leading, spacing: 12) {
             Text("Tags added to tasks are saved here automatically so they can be reused. Rename or delete a tag to update it everywhere it's used.")
                 .font(.caption)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(Color.taskToolSecondaryText)
                 .fixedSize(horizontal: false, vertical: true)
 
             HStack {
@@ -200,7 +200,7 @@ struct TagsSettingsTab: View {
 
             if showError {
                 Text(errorMessage)
-                    .foregroundStyle(.red)
+                    .foregroundStyle(Color.taskToolDanger)
                     .font(.caption)
             }
         }
@@ -327,14 +327,14 @@ tt list --plan TaskTool --status "In Progress"
 tt plans
 """)
                 .font(.system(.caption, design: .monospaced))
-                .foregroundStyle(.secondary)
+                .foregroundStyle(Color.taskToolSecondaryText)
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(10)
                 .background(.quaternary, in: RoundedRectangle(cornerRadius: 8))
 
             if storageURL == nil {
                 Label("Set a storage folder in General to generate your shell snippet.", systemImage: "exclamationmark.triangle")
-                    .foregroundStyle(.orange)
+                    .foregroundStyle(Color.taskToolWarning)
                     .font(.caption)
             }
         }

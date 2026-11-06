@@ -46,6 +46,17 @@ private enum OverviewUrgency: Int {
         case .inProgress: .green
         }
     }
+
+    /// Legible text variant of `color` for use over the capsule's tinted background.
+    var textColor: Color {
+        switch self {
+        case .overdue: .taskToolDanger
+        case .dueToday: .taskToolWarning
+        case .blocked: .taskToolBlocked
+        case .dueSoon: .taskToolInfo
+        case .inProgress: .taskToolSuccess
+        }
+    }
 }
 
 private struct RankedOverviewTask: Identifiable {
@@ -53,15 +64,6 @@ private struct RankedOverviewTask: Identifiable {
     let urgency: OverviewUrgency
 
     var id: UUID { task.id }
-}
-
-private struct PlanProgress: Identifiable {
-    let plan: Plan
-    let completed: Int
-    let total: Int
-
-    var id: UUID { plan.id }
-    var fraction: Double { total == 0 ? 0 : Double(completed) / Double(total) }
 }
 
 struct OverviewView: View {
@@ -74,6 +76,7 @@ struct OverviewView: View {
     @State private var showingError = false
     @State private var errorMessage = ""
     @State private var isOutlookEmailDropTargeted = false
+    @State private var newHabitName = ""
 
     private var todayStart: Date {
         OverviewCalendar.calendar().startOfDay(for: currentDate)
@@ -136,28 +139,17 @@ struct OverviewView: View {
         }.count
     }
 
-    private var progressByPlan: [PlanProgress] {
-        taskStore.plans
-            .filter { selectedPlanNames.contains($0.name) }
-            .sorted { $0.order < $1.order }
-            .map { plan in
-                let active = filteredBoardTasks.filter { $0.plan == plan.name }
-                let archived = selectedArchivedTasks.filter { $0.plan == plan.name }
-                let completedActive = active.filter { taskStore.isDoneTask($0) }.count
-                return PlanProgress(
-                    plan: plan,
-                    completed: completedActive + archived.count,
-                    total: active.count + archived.count
-                )
-            }
-    }
+    private static let maxAttentionTasks = 3
+    private static let attentionTag = "Important!"
 
     private var rankedTasks: [RankedOverviewTask] {
         let calendar = OverviewCalendar.calendar()
         let lastDueSoonDay = calendar.date(byAdding: .day, value: 7, to: todayStart) ?? todayStart
 
         return filteredBoardTasks.compactMap { task in
-            guard !taskStore.isDoneTask(task) else { return nil }
+            guard !taskStore.isDoneTask(task),
+                  task.tags.contains(where: { $0.caseInsensitiveCompare(Self.attentionTag) == .orderedSame })
+            else { return nil }
             let dueDay = task.dueDate.map { calendar.startOfDay(for: $0) }
             let urgency: OverviewUrgency?
 
@@ -193,8 +185,6 @@ struct OverviewView: View {
                 return lhs.task.title.localizedCaseInsensitiveCompare(rhs.task.title) == .orderedAscending
             }
         }
-        .prefix(5)
-        .map { $0 }
     }
 
     private var focusTaskChoices: [Task] {
@@ -250,8 +240,8 @@ struct OverviewView: View {
                 header
                 metrics
                 dailyFocus
+                habitTracker
                 priorityTasks
-                planProgressSection
             }
             .padding(28)
             .frame(maxWidth: 1080, alignment: .leading)
@@ -395,14 +385,14 @@ struct OverviewView: View {
                         .contentTransition(.numericText())
                     Text("today")
                         .font(.caption)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(Color.taskToolSecondaryText)
                     Spacer(minLength: 8)
                     Text("\(completedThisWeekCount)")
                         .font(.title2.bold())
                         .contentTransition(.numericText())
                     Text("this week")
                         .font(.caption)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(Color.taskToolSecondaryText)
                 }
             }
 
@@ -415,7 +405,7 @@ struct OverviewView: View {
             metricCard(title: "Overdue", systemImage: "calendar.badge.exclamationmark") {
                 Text("\(overdueTaskCount)")
                     .font(.title2.bold())
-                    .foregroundStyle(overdueTaskCount > 0 ? Color.red : Color.primary)
+                    .foregroundStyle(overdueTaskCount > 0 ? Color.taskToolDanger : Color.primary)
                     .contentTransition(.numericText())
             }
         }
@@ -424,7 +414,7 @@ struct OverviewView: View {
     private var dailyFocus: some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack {
-                Label("Today's focus", systemImage: "scope")
+                Label("Today's focus", systemImage: "checkmark.seal")
                     .font(.title2.bold())
                 Spacer()
                 Menu {
@@ -471,7 +461,7 @@ struct OverviewView: View {
                                 .lineLimit(1)
                             Text(task.plan)
                                 .font(.caption)
-                                .foregroundStyle(.secondary)
+                                .foregroundStyle(Color.taskToolSecondaryText)
                             Spacer()
                             Button {
                                 selectedFocusTaskIDs.remove(task.id.uuidString)
@@ -491,70 +481,122 @@ struct OverviewView: View {
         .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 12))
     }
 
+    private var habitTracker: some View {
+        let days = habitDays
+
+        return VStack(alignment: .leading, spacing: 12) {
+            HStack {
+                Label("Habits", systemImage: "flame")
+                    .font(.title2.bold())
+                Spacer()
+                Text("Last 7 days")
+                    .font(.caption)
+                    .foregroundStyle(Color.taskToolSecondaryText)
+            }
+
+            if !taskStore.settings.habits.isEmpty {
+                VStack(spacing: 0) {
+                    HStack(spacing: 10) {
+                        Spacer()
+                        ForEach(days, id: \.key) { day in
+                            Text(day.date.formatted(.dateTime.weekday(.narrow)))
+                                .font(.caption2)
+                                .foregroundStyle(day.key == todayKey ? Color.accentColor : Color.taskToolSecondaryText)
+                                .frame(width: 24)
+                        }
+                        Color.clear.frame(width: 96, height: 1)
+                    }
+                    .padding(.bottom, 6)
+
+                    ForEach(taskStore.settings.habits) { habit in
+                        habitRow(habit, days: days)
+                        if habit.id != taskStore.settings.habits.last?.id {
+                            Divider()
+                        }
+                    }
+                }
+            }
+
+            HStack(spacing: 8) {
+                TextField("New habit", text: $newHabitName)
+                    .textFieldStyle(.roundedBorder)
+                    .onSubmit(addHabit)
+                Button("Add", action: addHabit)
+                    .disabled(newHabitName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            }
+        }
+        .padding(18)
+        .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 12))
+    }
+
+    private func habitRow(_ habit: Habit, days: [(key: String, date: Date)]) -> some View {
+        let completed = Set(habit.completedDates)
+        let streak = habitStreak(completed)
+
+        return HStack(spacing: 10) {
+            Text(habit.name)
+                .lineLimit(1)
+            Spacer()
+            ForEach(days, id: \.key) { day in
+                let isDone = completed.contains(day.key)
+                Button {
+                    toggleHabit(habit, dayKey: day.key)
+                } label: {
+                    Image(systemName: isDone ? "checkmark.circle.fill" : "circle")
+                        .font(.title3)
+                        .foregroundStyle(isDone ? Color.taskToolSuccess : Color.secondary.opacity(0.6))
+                }
+                .buttonStyle(.plain)
+                .frame(width: 24)
+                .help(day.date.formatted(date: .complete, time: .omitted))
+                .accessibilityLabel("\(habit.name), \(day.date.formatted(date: .complete, time: .omitted))")
+                .accessibilityValue(isDone ? "Done" : "Not done")
+            }
+            HStack(spacing: 6) {
+                Label("\(streak)", systemImage: "flame.fill")
+                    .font(.caption.bold())
+                    .foregroundStyle(streak > 0 ? Color.taskToolWarning : Color.taskToolSecondaryText)
+                    .help("Current streak in days")
+                Button {
+                    deleteHabit(habit)
+                } label: {
+                    Image(systemName: "trash")
+                        .foregroundStyle(.secondary)
+                }
+                .buttonStyle(.plain)
+                .help("Delete habit")
+            }
+            .frame(width: 96, alignment: .trailing)
+        }
+        .padding(.vertical, 8)
+    }
+
     private var priorityTasks: some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack {
                 Text("Needs attention")
                     .font(.title2.bold())
                 Spacer()
-                Text("Top \(rankedTasks.count) across selected plans")
+                Text("Across selected plans")
                     .font(.caption)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(Color.taskToolSecondaryText)
             }
 
-            if rankedTasks.isEmpty {
+            let attentionTasks = Array(rankedTasks.prefix(Self.maxAttentionTasks))
+
+            if attentionTasks.isEmpty {
                 ContentUnavailableView(
                     "Nothing needs attention",
                     systemImage: "checkmark.circle",
-                    description: Text("No overdue, due-soon, blocked, or in-progress tasks match this plan filter.")
+                    description: Text("No open overdue, due-soon, blocked, or in-progress tasks tagged '\(Self.attentionTag)' match this plan filter.")
                 )
                 .frame(minHeight: 150)
             } else {
                 VStack(spacing: 0) {
-                    ForEach(Array(rankedTasks.enumerated()), id: \.element.id) { index, item in
+                    ForEach(Array(attentionTasks.enumerated()), id: \.element.id) { index, item in
                         overviewTaskRow(item)
-                        if index < rankedTasks.count - 1 {
+                        if index < attentionTasks.count - 1 {
                             Divider().padding(.leading, 12)
-                        }
-                    }
-                }
-                .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 12))
-            }
-        }
-    }
-
-    private var planProgressSection: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Text("Progress by plan")
-                .font(.title2.bold())
-
-            if progressByPlan.isEmpty {
-                Text("Select one or more plans to see their progress.")
-                    .foregroundStyle(.secondary)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(16)
-                    .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 12))
-            } else {
-                VStack(spacing: 0) {
-                    ForEach(Array(progressByPlan.enumerated()), id: \.element.id) { index, progress in
-                        HStack(spacing: 12) {
-                            Circle()
-                                .fill(Color.from(string: progress.plan.color))
-                                .frame(width: 9, height: 9)
-                            Text(progress.plan.name)
-                                .lineLimit(1)
-                                .frame(width: 150, alignment: .leading)
-                            ProgressView(value: progress.fraction)
-                                .tint(Color.from(string: progress.plan.color))
-                            Text("\(progress.completed)/\(progress.total)")
-                                .font(.caption.monospacedDigit())
-                                .foregroundStyle(.secondary)
-                                .frame(width: 62, alignment: .trailing)
-                        }
-                        .padding(.horizontal, 14)
-                        .padding(.vertical, 12)
-                        if index < progressByPlan.count - 1 {
-                            Divider().padding(.leading, 14)
                         }
                     }
                 }
@@ -571,7 +613,7 @@ struct OverviewView: View {
         VStack(alignment: .leading, spacing: 10) {
             Label(title, systemImage: systemImage)
                 .font(.subheadline)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(Color.taskToolSecondaryText)
             content()
                 .frame(maxWidth: .infinity, alignment: .leading)
         }
@@ -604,7 +646,7 @@ struct OverviewView: View {
                         }
                     }
                     .font(.caption)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(Color.taskToolSecondaryText)
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .contentShape(Rectangle())
@@ -613,7 +655,7 @@ struct OverviewView: View {
 
             Text(item.urgency.title)
                 .font(.caption.weight(.medium))
-                .foregroundStyle(item.urgency.color)
+                .foregroundStyle(item.urgency.textColor)
                 .padding(.horizontal, 8)
                 .padding(.vertical, 4)
                 .background(item.urgency.color.opacity(0.1), in: Capsule())
@@ -708,6 +750,59 @@ struct OverviewView: View {
             $0.overviewFocusDate = dateKey
             $0.overviewFocusNote = focusNote
             $0.overviewFocusTaskIDs = selectedFocusTaskIDs.sorted()
+        }
+    }
+
+    /// Last seven days ending today, oldest first.
+    private var habitDays: [(key: String, date: Date)] {
+        let calendar = OverviewCalendar.calendar()
+        return (0..<7).reversed().compactMap { offset in
+            guard let date = calendar.date(byAdding: .day, value: -offset, to: todayStart) else { return nil }
+            return (OverviewCalendar.dayKey(for: date), date)
+        }
+    }
+
+    /// Consecutive completed days ending today, or yesterday if today isn't done yet.
+    private func habitStreak(_ completed: Set<String>) -> Int {
+        let calendar = OverviewCalendar.calendar()
+        var day = todayStart
+        if !completed.contains(OverviewCalendar.dayKey(for: day)) {
+            guard let yesterday = calendar.date(byAdding: .day, value: -1, to: day) else { return 0 }
+            day = yesterday
+        }
+        var streak = 0
+        while completed.contains(OverviewCalendar.dayKey(for: day)) {
+            streak += 1
+            guard let previous = calendar.date(byAdding: .day, value: -1, to: day) else { break }
+            day = previous
+        }
+        return streak
+    }
+
+    private func addHabit() {
+        let name = newHabitName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !name.isEmpty else { return }
+        guard !taskStore.settings.habits.contains(where: { $0.name.caseInsensitiveCompare(name) == .orderedSame }) else {
+            showError("A habit named '\(name)' already exists.")
+            return
+        }
+        updateSettings { $0.habits.append(Habit(name: name)) }
+        newHabitName = ""
+    }
+
+    private func deleteHabit(_ habit: Habit) {
+        updateSettings { $0.habits.removeAll { $0.id == habit.id } }
+    }
+
+    private func toggleHabit(_ habit: Habit, dayKey: String) {
+        updateSettings { settings in
+            guard let index = settings.habits.firstIndex(where: { $0.id == habit.id }) else { return }
+            if let dateIndex = settings.habits[index].completedDates.firstIndex(of: dayKey) {
+                settings.habits[index].completedDates.remove(at: dateIndex)
+            } else {
+                settings.habits[index].completedDates.append(dayKey)
+                settings.habits[index].completedDates.sort()
+            }
         }
     }
 
