@@ -605,10 +605,31 @@ struct PlanDetailView: View {
     
     /// Tasks grouped by status name, computed once per render instead of re-filtering
     /// `filteredPlanTasks` from scratch for every Kanban column. Each group is sorted by the
-    /// task's manual `order`, so drag-to-reorder positions are reflected on the board.
+    /// task's due date (soonest first, bundles use their earliest child's due date), followed by
+    /// tasks without a due date in their manual `order`. Ties on due date use manual `order` too.
     var tasksGroupedByStatus: [String: [Task]] {
         Dictionary(grouping: filteredPlanTasks, by: { $0.status })
-            .mapValues { $0.sorted { $0.order < $1.order } }
+            .mapValues { group in
+                let withDates = group.map { (task: $0, due: effectiveDueDate(for: $0)) }
+                return withDates.sorted { lhs, rhs in
+                    switch (lhs.due, rhs.due) {
+                    case let (left?, right?) where left != right:
+                        return left < right
+                    case (_?, nil):
+                        return true
+                    case (nil, _?):
+                        return false
+                    default:
+                        return lhs.task.order < rhs.task.order
+                    }
+                }.map(\.task)
+            }
+    }
+
+    private func effectiveDueDate(for task: Task) -> Date? {
+        if let dueDate = task.dueDate { return dueDate }
+        guard task.isBundle else { return nil }
+        return taskStore.childTasks(of: task).compactMap(\.dueDate).min()
     }
 
     func tasks(for status: Plan.TaskStatus) -> [Task] {
