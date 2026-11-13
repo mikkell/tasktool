@@ -15,7 +15,7 @@ private final class GitCallbackContext {
 }
 
 /// Serializes Git operations. The caller must also suspend TaskStore writes and its
-/// watcher while applying a sync; this backend is not wired to the live app yet.
+/// watcher while applying a sync.
 actor EmbeddedGitRepository {
     private static let runtime = git_libgit2_init()
     private let pointer: OpaquePointer
