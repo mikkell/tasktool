@@ -7,19 +7,25 @@ import SwiftUI
 import UniformTypeIdentifiers
 
 struct SettingsView: View {
+    @EnvironmentObject var taskStore: TaskStore
     var body: some View {
         TabView {
             GeneralSettingsTab()
+                .disabled(taskStore.isSyncing)
                 .tabItem { Label("General", systemImage: "gearshape") }
 
             ShortcutsSettingsTab()
                 .tabItem { Label("Shortcuts", systemImage: "keyboard") }
 
             TagsSettingsTab()
+                .disabled(!taskStore.canEditStorage)
                 .tabItem { Label("Tags", systemImage: "tag") }
 
             CLISettingsTab()
                 .tabItem { Label("CLI", systemImage: "terminal") }
+
+            GitSyncSettingsTab()
+                .tabItem { Label("Git Sync", systemImage: "arrow.triangle.2.circlepath") }
         }
         .frame(width: 480)
         .fixedSize()
@@ -42,6 +48,12 @@ struct GeneralSettingsTab: View {
                             .lineLimit(1)
                             .truncationMode(.middle)
                         Button("Change…") { showFolderPicker() }
+                            .disabled(taskStore.gitRemoteURL != nil)
+                    }
+                    if taskStore.gitRemoteURL != nil {
+                        Text("Disconnect Git sync before choosing another storage folder.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
                     }
                 }
 

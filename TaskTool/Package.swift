@@ -22,13 +22,13 @@ let package = Package(
             exclude: [
                 "Assets.xcassets", "ContentView.swift", "Item.swift",
                 "MarkdownPreview.swift", "OutlookEmailDrop.swift", "OverviewView.swift",
-                "Readability.swift", "SettingsView.swift", "TaskStore.swift",
+                "Readability.swift", "SettingsView.swift", "GitSyncSettingsTab.swift", "TaskStore.swift",
                 "TaskTool.entitlements", "TaskToolApp.swift"
             ],
             sources: [
                 "Task.swift", "Plan.swift", "Settings.swift",
                 "MarkdownParser.swift", "TaskSyncMerge.swift", "RepositorySyncMerge.swift",
-                "GitHubCredentials.swift", "GitSyncFiles.swift", "EmbeddedGitRepository.swift"
+                "GitHubCredentials.swift", "GitSyncFiles.swift", "EmbeddedGitRepository.swift", "GitSyncClient.swift"
             ]
         ),
         .testTarget(

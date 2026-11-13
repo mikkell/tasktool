@@ -1,6 +1,15 @@
 {
-  "originHash" : "00fc82b0de716b0b6fae8646fae1c289e5b4679f93a4b0a9aca7e47cd71f9315",
+  "originHash" : "fda9892c8bd7e5bdd4085c684c49ce8229a87e319eeb1ad2028bb0bb01738788",
   "pins" : [
+    {
+      "identity" : "libgit2",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/ibrahimcetin/libgit2.git",
+      "state" : {
+        "revision" : "52287b0914f300f916b58fec80e13d8dd8f6824f",
+        "version" : "1.9.2"
+      }
+    },
     {
       "identity" : "yams",
       "kind" : "remoteSourceControl",

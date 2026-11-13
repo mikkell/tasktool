@@ -423,6 +423,7 @@ struct ContentView: View {
             }
             }
         }
+        .disabled(!taskStore.canEditStorage)
         .overlay(alignment: .bottomTrailing) {
             VStack(alignment: .trailing, spacing: 10) {
                 if let notice = taskStore.outlookCaptureNotice {
@@ -445,6 +446,24 @@ struct ContentView: View {
             .padding()
             .animation(.easeInOut(duration: 0.2), value: taskStore.pendingUndo?.id)
             .animation(.easeInOut(duration: 0.2), value: taskStore.outlookCaptureNotice?.id)
+        }
+        .safeAreaInset(edge: .bottom) {
+            if taskStore.gitRemoteURL != nil || taskStore.isSyncing {
+                HStack {
+                    if taskStore.isSyncing { ProgressView().controlSize(.small) }
+                    Text(taskStore.gitSyncMessage)
+                        .font(.caption)
+                        .lineLimit(2)
+                    Spacer()
+                    Button("Sync Now") {
+                        _Concurrency.Task { await taskStore.syncGit() }
+                    }
+                    .disabled(taskStore.gitRemoteURL == nil || !taskStore.canEditStorage)
+                    SettingsLink { Text("Settings") }
+                }
+                .padding(8)
+                .background(.bar)
+            }
         }
     }
     

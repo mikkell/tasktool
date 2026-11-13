@@ -8,6 +8,7 @@
 
 /* Begin PBXBuildFile section */
 		6CF16D5E2FB3258800875415 /* Yams in Frameworks */ = {isa = PBXBuildFile; productRef = 6C072B5E2F22172400D7A219 /* Yams */; };
+		A10000000000000000000001 /* TaskToolCore in Frameworks */ = {isa = PBXBuildFile; productRef = A10000000000000000000002 /* TaskToolCore */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -33,9 +34,27 @@
 		6C072B4B2F22172300D7A219 /* TaskToolUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = TaskToolUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
+/* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
+		A10000000000000000000003 /* Exceptions for "TaskTool" folder in "TaskTool" target */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (
+				EmbeddedGitRepository.swift,
+				GitHubCredentials.swift,
+				GitSyncClient.swift,
+				GitSyncFiles.swift,
+				RepositorySyncMerge.swift,
+				TaskSyncMerge.swift,
+			);
+			target = 6C072B312F22172000D7A219 /* TaskTool */;
+		};
+/* End PBXFileSystemSynchronizedBuildFileExceptionSet section */
+
 /* Begin PBXFileSystemSynchronizedRootGroup section */
 		6C072B342F22172000D7A219 /* TaskTool */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
+			exceptions = (
+				A10000000000000000000003 /* Exceptions for "TaskTool" folder in "TaskTool" target */,
+			);
 			path = TaskTool;
 			sourceTree = "<group>";
 		};
@@ -57,6 +76,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				6CF16D5E2FB3258800875415 /* Yams in Frameworks */,
+				A10000000000000000000001 /* TaskToolCore in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -118,6 +138,7 @@
 			name = TaskTool;
 			packageProductDependencies = (
 				6C072B5E2F22172400D7A219 /* Yams */,
+				A10000000000000000000002 /* TaskToolCore */,
 			);
 			productName = TaskTool;
 			productReference = 6C072B322F22172000D7A219 /* TaskTool.app */;
@@ -203,6 +224,7 @@
 			minimizedProjectReferenceProxies = 1;
 			packageReferences = (
 				6C072B5F2F22172400D7A219 /* XCRemoteSwiftPackageReference "Yams" */,
+				A10000000000000000000004 /* XCLocalSwiftPackageReference "." */,
 			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = 6C072B332F22172000D7A219 /* Products */;
@@ -411,7 +433,7 @@
 				ENABLE_APP_SANDBOX = YES;
 				ENABLE_HARDENED_RUNTIME = YES;
 				ENABLE_INCOMING_NETWORK_CONNECTIONS = NO;
-				ENABLE_OUTGOING_NETWORK_CONNECTIONS = NO;
+				ENABLE_OUTGOING_NETWORK_CONNECTIONS = YES;
 				ENABLE_PREVIEWS = YES;
 				ENABLE_RESOURCE_ACCESS_AUDIO_INPUT = NO;
 				ENABLE_RESOURCE_ACCESS_BLUETOOTH = NO;
@@ -468,7 +490,7 @@
 				ENABLE_APP_SANDBOX = YES;
 				ENABLE_HARDENED_RUNTIME = YES;
 				ENABLE_INCOMING_NETWORK_CONNECTIONS = NO;
-				ENABLE_OUTGOING_NETWORK_CONNECTIONS = NO;
+				ENABLE_OUTGOING_NETWORK_CONNECTIONS = YES;
 				ENABLE_PREVIEWS = YES;
 				ENABLE_RESOURCE_ACCESS_AUDIO_INPUT = NO;
 				ENABLE_RESOURCE_ACCESS_BLUETOOTH = NO;
@@ -659,6 +681,13 @@
 		};
 /* End XCConfigurationList section */
 
+/* Begin XCLocalSwiftPackageReference section */
+		A10000000000000000000004 /* XCLocalSwiftPackageReference "." */ = {
+			isa = XCLocalSwiftPackageReference;
+			relativePath = .;
+		};
+/* End XCLocalSwiftPackageReference section */
+
 /* Begin XCRemoteSwiftPackageReference section */
 		6C072B5F2F22172400D7A219 /* XCRemoteSwiftPackageReference "Yams" */ = {
 			isa = XCRemoteSwiftPackageReference;
@@ -675,6 +704,10 @@
 			isa = XCSwiftPackageProductDependency;
 			package = 6C072B5F2F22172400D7A219 /* XCRemoteSwiftPackageReference "Yams" */;
 			productName = Yams;
+		};
+		A10000000000000000000002 /* TaskToolCore */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = TaskToolCore;
 		};
 /* End XCSwiftPackageProductDependency section */
 	};

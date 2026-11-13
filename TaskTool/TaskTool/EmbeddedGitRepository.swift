@@ -42,6 +42,33 @@ actor EmbeddedGitRepository {
 
     deinit { git_repository_free(pointer) }
 
+    static func open(at directory: URL, remote: GitHubRemote, credentials: GitHubTokenStore) throws -> EmbeddedGitRepository {
+        guard runtime >= 0 else { throw GitSyncError.operation("initialize", runtime) }
+        var repository: OpaquePointer?
+        try check(git_repository_open(&repository, directory.path), "open repository")
+        guard let repository else { throw GitSyncError.operation("open repository", -1) }
+        guard git_repository_is_bare(repository) == 0,
+              let workdir = git_repository_workdir(repository),
+              URL(fileURLWithPath: String(cString: workdir)).resolvingSymlinksInPath().standardizedFileURL
+                == directory.resolvingSymlinksInPath().standardizedFileURL else {
+            git_repository_free(repository)
+            throw GitSyncError.unsupportedFile(directory.path)
+        }
+        return EmbeddedGitRepository(pointer: repository, directory: directory, github: remote, localRemote: nil, credentials: credentials)
+    }
+
+    func hasPendingApplication() throws -> Bool {
+        try manager.fileExists(atPath: journal.path) || reference("refs/tasktool/pending") != nil
+    }
+
+    func validateForUse() throws {
+        try ready()
+        let remote = try origin()
+        git_remote_free(remote)
+        let current = try workingFiles(tracked: files())
+        _ = try GitSyncFiles.reconcile(base: current, local: current, remote: current)
+    }
+
     static func clone(from remote: GitHubRemote, to directory: URL, credentials: GitHubTokenStore) throws -> EmbeddedGitRepository {
         try clone(source: remote.url.absoluteString, to: directory, github: remote, localRemote: nil, credentials: credentials)
     }

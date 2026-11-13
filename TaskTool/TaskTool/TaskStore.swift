@@ -7,6 +7,18 @@
 
 import Foundation
 import Combine
+import TaskToolCore
+
+protocol TaskStoreGitService: Actor {
+    func clone(remoteURL: String, to directory: URL, token: String) async throws
+    func open(remoteURL: String, at directory: URL) async throws
+    func sync() async throws
+    func recover() async throws
+    func updateToken(_ token: String) async throws
+    func disconnect() async throws
+}
+
+extension GitSyncClient: TaskStoreGitService {}
 
 /// Debug-only logging. The `@autoclosure` defers string interpolation so the
 /// (sometimes expensive, e.g. array-mapping) message is never built in Release builds.
@@ -28,6 +40,8 @@ struct PendingUndo: Identifiable {
 enum TaskStoreError: LocalizedError {
     case storageUnavailable
     case taskNotFound(UUID)
+    case gitOperationInProgress
+    case gitRecoveryRequired
 
     var errorDescription: String? {
         switch self {
@@ -35,6 +49,10 @@ enum TaskStoreError: LocalizedError {
             return "Task storage is unavailable."
         case .taskNotFound(let id):
             return "Task \(id.uuidString) is no longer available."
+        case .gitOperationInProgress:
+            return "Wait for the Git operation to finish before editing tasks."
+        case .gitRecoveryRequired:
+            return "Recover the interrupted Git sync before editing tasks."
         }
     }
 }
@@ -48,15 +66,41 @@ class TaskStore: ObservableObject {
     @Published var settings: Settings = Settings()
     @Published var pendingUndo: PendingUndo?
     @Published var outlookCaptureNotice: OutlookCaptureNotice?
+    @Published private(set) var isSyncing = false
+    @Published private(set) var gitRemoteURL: String?
+    @Published private(set) var gitSyncMessage = "Git sync is not configured."
+    @Published private(set) var gitSyncConflicts: [String] = []
+    @Published private(set) var needsGitRecovery = false
+    @Published private(set) var gitStorageUnavailable = false
+
+    var canEditStorage: Bool { !isSyncing && !needsGitRecovery && !gitStorageUnavailable }
     
     private let fileManager = FileManager.default
+    private let gitClient: any TaskStoreGitService
+    private let defaults: UserDefaults
+    private let gitRepositoriesURL: URL?
+    private var didLoadStoredLocation = false
     private var fileWatcher: DispatchSourceFileSystemObject?
     private var planWatchers: [String: DispatchSourceFileSystemObject] = [:]  // keyed by plan folder name
     private var isSaving = false  // Flag to prevent reload during save
     private var pendingUndoDismissWorkItem: DispatchWorkItem?
     private var reloadDebounceWork: DispatchWorkItem?  // Debounce rapid file system events
     private var savingWorkItem: DispatchWorkItem?  // Single cancellable timer for isSaving reset
+
+    init(
+        gitClient: any TaskStoreGitService = GitSyncClient(),
+        defaults: UserDefaults = .standard,
+        gitRepositoriesURL: URL? = nil
+    ) {
+        self.gitClient = gitClient
+        self.defaults = defaults
+        self.gitRepositoriesURL = gitRepositoriesURL ?? FileManager.default.urls(
+            for: .applicationSupportDirectory, in: .userDomainMask
+        ).first?.appendingPathComponent("TaskTool/GitRepositories", isDirectory: true)
+    }
+
     func setStorageLocation(_ url: URL) {
+        guard canEditStorage, gitRemoteURL == nil else { return }
         debugLog("📍 setStorageLocation called with: \(url.path)")
         
         // Start accessing security-scoped resource
@@ -76,7 +120,7 @@ class TaskStore: ObservableObject {
                 includingResourceValuesForKeys: nil,
                 relativeTo: nil
             )
-            UserDefaults.standard.set(bookmarkData, forKey: "storageLocationBookmark")
+            defaults.set(bookmarkData, forKey: "storageLocationBookmark")
             debugLog("✅ Saved security-scoped bookmark")
         } catch {
             debugLog("❌ Failed to create bookmark: \(error)")
@@ -87,7 +131,17 @@ class TaskStore: ObservableObject {
     }
     
     func loadStoredLocation() {
-        guard let bookmarkData = UserDefaults.standard.data(forKey: "storageLocationBookmark") else {
+        guard !didLoadStoredLocation else { return }
+        didLoadStoredLocation = true
+        if defaults.string(forKey: "gitSyncRepositoryID") != nil {
+            _Concurrency.Task { await restoreGitSync() }
+            return
+        }
+        loadBookmarkedLocation()
+    }
+
+    private func loadBookmarkedLocation() {
+        guard let bookmarkData = defaults.data(forKey: "storageLocationBookmark") else {
             return
         }
         
@@ -113,17 +167,161 @@ class TaskStore: ObservableObject {
                     includingResourceValuesForKeys: nil,
                     relativeTo: nil
                 ) {
-                    UserDefaults.standard.set(freshData, forKey: "storageLocationBookmark")
+                    defaults.set(freshData, forKey: "storageLocationBookmark")
                     debugLog("✅ Refreshed security-scoped bookmark")
                 }
             }
 
             self.storageURL = url
             loadAllData()
-            startWatching()
+            if canEditStorage { startWatching() }
         } catch {
             debugLog("Failed to resolve bookmark: \(error)")
         }
+    }
+
+    func configureGitSync(remoteURL: String, token: String) async {
+        guard canEditStorage, gitRemoteURL == nil else { return }
+        do {
+            let remote = try GitSyncClient.canonicalRemoteURL(remoteURL.trimmingCharacters(in: .whitespacesAndNewlines))
+            guard let root = gitRepositoriesURL else { throw TaskStoreError.storageUnavailable }
+            let id = UUID().uuidString
+            let directory = root.appendingPathComponent(id, isDirectory: true)
+            beginGitOperation("Cloning repository...")
+            defer { endGitOperation() }
+            try fileManager.createDirectory(at: root, withIntermediateDirectories: true)
+            try await gitClient.clone(remoteURL: remote, to: directory, token: token)
+            defaults.set(remote, forKey: "gitSyncRemoteURL")
+            defaults.set(id, forKey: "gitSyncRepositoryID")
+            storageURL = directory
+            gitRemoteURL = remote
+            gitStorageUnavailable = false
+            gitSyncMessage = "Connected. Sync is manual; local edits are saved immediately."
+        } catch {
+            showGitFailure(error)
+        }
+    }
+
+    func restoreGitSync() async {
+        guard !isSyncing else { return }
+        guard let id = defaults.string(forKey: "gitSyncRepositoryID"),
+              UUID(uuidString: id) != nil,
+              let remote = defaults.string(forKey: "gitSyncRemoteURL"),
+              let root = gitRepositoriesURL else {
+            gitSyncMessage = "Git storage configuration is incomplete. Disconnect it to return to your previous folder."
+            gitRemoteURL = defaults.string(forKey: "gitSyncRemoteURL") ?? "Unavailable"
+            gitStorageUnavailable = true
+            return
+        }
+        beginGitOperation("Opening repository...")
+        defer { endGitOperation() }
+        gitRemoteURL = remote
+        gitStorageUnavailable = true
+        let directory = root.appendingPathComponent(id, isDirectory: true)
+        storageURL = directory
+        do {
+            try await gitClient.open(remoteURL: remote, at: directory)
+            gitStorageUnavailable = false
+            gitSyncMessage = "Ready to sync."
+        } catch {
+            showGitFailure(error)
+        }
+    }
+
+    func syncGit() async {
+        guard gitRemoteURL != nil, canEditStorage else { return }
+        beginGitOperation("Syncing...")
+        defer { endGitOperation() }
+        do {
+            try await gitClient.sync()
+            gitSyncMessage = "Synced successfully."
+        } catch {
+            showGitFailure(error)
+        }
+    }
+
+    func recoverGitSync() async {
+        guard gitRemoteURL != nil, needsGitRecovery, !isSyncing else { return }
+        beginGitOperation("Recovering interrupted sync...")
+        defer { endGitOperation() }
+        do {
+            try await gitClient.recover()
+            needsGitRecovery = false
+            gitStorageUnavailable = false
+            gitSyncMessage = "Recovery completed. Sync again to publish local commits."
+        } catch {
+            showGitFailure(error)
+        }
+    }
+
+    func updateGitToken(_ token: String) async {
+        guard gitRemoteURL != nil, !isSyncing else { return }
+        beginGitOperation("Updating token...")
+        defer { endGitOperation() }
+        do {
+            try await gitClient.updateToken(token)
+            gitSyncMessage = "Token updated."
+        } catch {
+            showGitFailure(error)
+        }
+    }
+
+    func disconnectGitSync() async {
+        guard gitRemoteURL != nil, !isSyncing else { return }
+        beginGitOperation("Disconnecting...")
+        defer { endGitOperation() }
+        do {
+            try await gitClient.disconnect()
+            defaults.removeObject(forKey: "gitSyncRemoteURL")
+            defaults.removeObject(forKey: "gitSyncRepositoryID")
+            gitRemoteURL = nil
+            needsGitRecovery = false
+            gitStorageUnavailable = false
+            storageURL = nil
+            plans = []
+            tasks = []
+            archivedTasks = []
+            settings = Settings()
+            loadBookmarkedLocation()
+            gitSyncMessage = "Disconnected. The Git checkout and its local commits are retained."
+        } catch {
+            showGitFailure(error)
+        }
+    }
+
+    private func beginGitOperation(_ message: String) {
+        isSyncing = true
+        gitSyncMessage = message
+        gitSyncConflicts = []
+        dismissPendingUndo()
+        stopWatching()
+        savingWorkItem?.cancel()
+        savingWorkItem = nil
+        isSaving = true
+    }
+
+    private func endGitOperation() {
+        isSyncing = false
+        isSaving = false
+        guard !needsGitRecovery && !gitStorageUnavailable else { return }
+        loadAllData()
+        if storageURL != nil { startWatching() }
+    }
+
+    private func showGitFailure(_ error: Error) {
+        if let failure = error as? GitSyncFailure {
+            gitSyncMessage = failure.message
+            gitSyncConflicts = failure.conflicts
+            needsGitRecovery = needsGitRecovery || failure.requiresRecovery
+        } else {
+            gitSyncMessage = "Git setup or sync failed. Check storage access and repository configuration."
+        }
+    }
+
+    private func requireWritableStorage() throws {
+        if isSyncing { throw TaskStoreError.gitOperationInProgress }
+        if needsGitRecovery { throw TaskStoreError.gitRecoveryRequired }
+        if gitStorageUnavailable { throw TaskStoreError.storageUnavailable }
     }
 
     func dismissOutlookCaptureNotice() {
@@ -194,6 +392,7 @@ class TaskStore: ObservableObject {
     }
     
     func loadAllData() {
+        guard canEditStorage else { return }
         guard let storageURL = storageURL else { return }
         
         plans = []
@@ -299,6 +498,7 @@ class TaskStore: ObservableObject {
     }
     
     func saveSettings() throws {
+        try requireWritableStorage()
         guard let storageURL = storageURL else { return }
         let settingsFile = storageURL.appendingPathComponent("settings.yaml")
         let content = MarkdownParser.serializeSettings(settings)
@@ -417,6 +617,7 @@ class TaskStore: ObservableObject {
     }
     
     func createPlan(_ plan: Plan) throws {
+        try requireWritableStorage()
         debugLog("📝 createPlan called for: \(plan.name)")
         guard let storageURL = storageURL else {
             debugLog("❌ storageURL is nil")
@@ -459,6 +660,7 @@ class TaskStore: ObservableObject {
     }
     
     func updatePlan(_ plan: Plan) throws {
+        try requireWritableStorage()
         guard let storageURL = storageURL else { return }
 
         // Build a rename map: oldStatusName → newStatusName for any status whose
@@ -510,6 +712,7 @@ class TaskStore: ObservableObject {
     }
     
     func deletePlan(_ plan: Plan) throws {
+        try requireWritableStorage()
         guard let storageURL = storageURL else { return }
         
         // Cancel the plan directory watcher before removing the folder.
@@ -543,6 +746,7 @@ class TaskStore: ObservableObject {
     /// Rename a plan's folder and write all updated properties in a single operation.
     /// `updatedPlan` must have the new `name` (and any other changed fields) already set.
     func renamePlan(_ plan: Plan, to updatedPlan: Plan) throws {
+        try requireWritableStorage()
         guard let storageURL = storageURL else { return }
 
         let oldName = plan.name
@@ -607,6 +811,7 @@ class TaskStore: ObservableObject {
     }
     
     func createTask(_ task: Task) throws {
+        try requireWritableStorage()
         debugLog("📝 createTask called for: \(task.title)")
         guard let storageURL = storageURL else {
             debugLog("❌ storageURL is nil")
@@ -658,6 +863,7 @@ class TaskStore: ObservableObject {
     }
 
     func updateTask(_ task: Task) throws {
+        try requireWritableStorage()
         guard let storageURL = storageURL else { return }
         
         // Find the old task to check if filename or plan changed
@@ -744,6 +950,7 @@ class TaskStore: ObservableObject {
     /// so they become available for reuse on other tasks. Comparison is case-insensitive to
     /// avoid near-duplicate entries like "Bug" and "bug"; the first-seen casing wins.
     func registerTags(_ tags: [String]) throws {
+        try requireWritableStorage()
         let existingLowercased = Set(settings.availableTags.map { $0.lowercased() })
         let newTags = tags.filter { !$0.isEmpty && !existingLowercased.contains($0.lowercased()) }
         guard !newTags.isEmpty else { return }
@@ -755,6 +962,7 @@ class TaskStore: ObservableObject {
 
     /// Renames a tag across the global registry and every task that currently uses it.
     func renameGlobalTag(from oldName: String, to newName: String) throws {
+        try requireWritableStorage()
         let trimmed = newName.trimmingCharacters(in: .whitespaces)
         guard !trimmed.isEmpty, trimmed != oldName else { return }
 
@@ -780,6 +988,7 @@ class TaskStore: ObservableObject {
 
     /// Removes a tag from the global registry and from every task that currently uses it.
     func deleteGlobalTag(_ name: String) throws {
+        try requireWritableStorage()
         settings.availableTags.removeAll { $0 == name }
 
         try applyToAllTasks(containingTag: name) { task in
@@ -839,6 +1048,7 @@ class TaskStore: ObservableObject {
     }
 
     func deleteTask(_ task: Task) throws {
+        try requireWritableStorage()
         guard let storageURL = storageURL else { return }
 
         let planFolder = storageURL.appendingPathComponent(task.plan)
@@ -901,6 +1111,7 @@ class TaskStore: ObservableObject {
     /// target plan's first status. Continues past per-task failures; the first error (if any)
     /// is rethrown after every task has been attempted.
     func moveTasks(_ tasksToMove: [Task], toPlan targetPlan: Plan) throws {
+        try requireWritableStorage()
         var firstError: Error?
         let sortedTargetStatuses = targetPlan.statuses.sorted { $0.order < $1.order }
 
@@ -933,6 +1144,7 @@ class TaskStore: ObservableObject {
     /// action (e.g. from a multi-select bulk action). Continues past per-task failures; the
     /// first error (if any) is rethrown after every task has been attempted.
     func moveTasks(_ tasksToMove: [Task], toStatus statusName: String) throws {
+        try requireWritableStorage()
         var firstError: Error?
 
         for task in tasksToMove {
@@ -977,6 +1189,7 @@ class TaskStore: ObservableObject {
     /// currently hidden inside a bundle (bundled children aren't independently reorderable on
     /// the board; the bundle container card itself can be reordered like any other task).
     func reorderTask(_ draggedTask: Task, before targetTask: Task) throws {
+        try requireWritableStorage()
         guard draggedTask.id != targetTask.id else { return }
         guard draggedTask.parentBundleID == nil, targetTask.parentBundleID == nil else { return }
 
@@ -1026,6 +1239,7 @@ class TaskStore: ObservableObject {
     /// task inside it as a unit. No-ops if `draggedTask` is itself a bundle container (bundling
     /// bundles together isn't supported), or if dropped onto itself.
     func bundleTask(_ draggedTask: Task, onto targetTask: Task) throws {
+        try requireWritableStorage()
         guard draggedTask.id != targetTask.id else { return }
         guard draggedTask.bundledTaskIDs.isEmpty else { return }
 
@@ -1083,6 +1297,7 @@ class TaskStore: ObservableObject {
     /// dissolves: the last remaining task is also freed and the now-empty container is deleted.
     /// No-ops if `task` isn't currently bundled.
     func removeTaskFromBundle(_ task: Task) throws {
+        try requireWritableStorage()
         guard let containerID = task.parentBundleID,
               var container = tasks.first(where: { $0.id == containerID }) else { return }
 
@@ -1132,6 +1347,7 @@ class TaskStore: ObservableObject {
     /// Re-creates a previously deleted task file exactly as it was. No-ops if the owning
     /// plan folder no longer exists (e.g. the plan itself was also deleted in the meantime).
     private func restoreTask(_ task: Task) throws {
+        try requireWritableStorage()
         guard let storageURL = storageURL else { return }
 
         let planFolder = storageURL.appendingPathComponent(task.plan)
@@ -1151,6 +1367,7 @@ class TaskStore: ObservableObject {
     /// as it was, restoring its original position in `settings.planOrder`. No-ops if a plan
     /// with the same folder name already exists (e.g. a new plan was created in its place).
     private func restorePlan(_ plan: Plan, tasks tasksToRestore: [Task]) throws {
+        try requireWritableStorage()
         guard let storageURL = storageURL else { return }
 
         let planFolder = storageURL.appendingPathComponent(plan.folderName)
@@ -1222,6 +1439,7 @@ class TaskStore: ObservableObject {
     /// Resolves (and creates if needed) the plan's `attachments` folder, and computes a
     /// collision-free destination file URL for `fileName` within it.
     private func attachmentDestination(forFileNamed fileName: String, planName: String) throws -> (folder: URL, file: URL) {
+        try requireWritableStorage()
         guard let storageURL = storageURL else {
             throw NSError(domain: "TaskStore", code: 2, userInfo: [NSLocalizedDescriptionKey: "No storage location set"])
         }
@@ -1255,6 +1473,7 @@ class TaskStore: ObservableObject {
     /// week") can be reviewed together later. `subfolder` is sanitized to strip path separators
     /// and other characters that aren't safe as a single folder name.
     func archiveDoneTasks(for plan: Plan, tasks doneTasks: [Task], subfolder: String = "") throws {
+        try requireWritableStorage()
         guard let storageURL = storageURL else { return }
         
         let planFolder = storageURL.appendingPathComponent(plan.folderName)
