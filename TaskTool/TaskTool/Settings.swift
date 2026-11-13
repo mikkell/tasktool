@@ -19,7 +19,7 @@ struct Habit: Codable, Identifiable, Equatable {
     }
 }
 
-struct Settings: Codable {
+struct Settings: Codable, Equatable {
     var planOrder: [String] // Array of plan names in display order
     var availableTags: [String] // Global registry of tags, reusable across all tasks
     var overviewSelectedPlanNames: [String]?

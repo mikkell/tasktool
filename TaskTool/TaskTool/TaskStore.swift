@@ -696,11 +696,14 @@ class TaskStore: ObservableObject {
                 debugLog("🗑️ Deleted old task file")
             }
         } else {
-            // Write to the new/current filename first
-            try content.write(to: newTaskFile, atomically: false, encoding: .utf8)
+            // Unchanged title: rewrite the task's own file (it may be a `slug-<uuid8>.md` variant).
+            // Otherwise write to the new filename first.
+            let filenameChanged = oldTask.fileName != task.fileName
+            let targetFile = filenameChanged ? newTaskFile : oldTaskFile
+            try content.write(to: targetFile, atomically: false, encoding: .utf8)
             
             // If filename changed (due to title change), delete old file only after new one is written
-            if oldTask.fileName != task.fileName && fileManager.fileExists(atPath: oldTaskFile.path) {
+            if filenameChanged && fileManager.fileExists(atPath: oldTaskFile.path) {
                 try fileManager.removeItem(at: oldTaskFile)
             }
         }
@@ -810,15 +813,19 @@ class TaskStore: ObservableObject {
     }
 
     /// Resolves the actual on-disk URL for a task file.
-    /// First tries the computed `task.fileName`. If that file doesn't exist (e.g. the slug was
-    /// generated from a title that had trailing whitespace, producing a trailing-dash filename),
-    /// falls back to scanning the plan folder for a `.md` file that contains the task's UUID.
+    /// First tries the computed `task.fileName`, but only if that file really belongs to the task
+    /// (two tasks with the same title share a slug; the second one lives in `slug-<uuid8>.md`).
+    /// Otherwise falls back to scanning the plan folder for a `.md` file that contains the task's
+    /// UUID (also handles slug mismatches such as trailing-dash filenames).
     private func resolveTaskFile(for task: Task, in folder: URL) -> URL? {
-        let computed = folder.appendingPathComponent(task.fileName)
-        if fileManager.fileExists(atPath: computed.path) { return computed }
-
-        // Fallback: find by UUID (handles slug mismatches from trailing spaces, etc.)
         let uuidString = task.id.uuidString.uppercased()
+        let computed = folder.appendingPathComponent(task.fileName)
+        if fileManager.fileExists(atPath: computed.path),
+           let content = try? String(contentsOf: computed, encoding: .utf8),
+           content.uppercased().contains(uuidString) {
+            return computed
+        }
+
         guard let contents = try? fileManager.contentsOfDirectory(
             at: folder, includingPropertiesForKeys: nil, options: .skipsHiddenFiles
         ) else { return nil }

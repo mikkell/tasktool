@@ -812,6 +812,42 @@ final class TaskStoreTests: XCTestCase {
             atPath: tempDir.appendingPathComponent("Work/archive-me.md").path))
     }
 
+    func testArchivingTaskWithDuplicateTitleArchivesItsOwnFile() throws {
+        let plan = Plan(name: "Work", color: "blue", statuses: [
+            Plan.TaskStatus(name: "To Do", color: "gray", order: 0),
+            Plan.TaskStatus(name: "Done", color: "green", order: 1)
+        ])
+        try taskStore.createPlan(plan)
+        let first = Task(title: "Same Title", plan: "Work", status: "To Do")
+        var second = Task(title: "Same Title", plan: "Work", status: "Done")
+        second.status = "Done"
+        try taskStore.createTask(first)
+        try taskStore.createTask(second)
+
+        try taskStore.archiveDoneTasks(for: plan, tasks: [second])
+        taskStore.loadAllData()
+
+        XCTAssertEqual(taskStore.tasks.map(\.id), [first.id])
+        XCTAssertEqual(taskStore.archivedTasks.map(\.id), [second.id])
+    }
+
+    func testUpdatingTaskWithDuplicateTitleDoesNotOverwriteOtherTask() throws {
+        try taskStore.createPlan(Plan(name: "Work", color: "blue"))
+        let first = Task(title: "Same Title", plan: "Work", status: "To Do")
+        let second = Task(title: "Same Title", plan: "Work", status: "To Do")
+        try taskStore.createTask(first)
+        try taskStore.createTask(second)
+
+        var edited = second
+        edited.status = "In Progress"
+        try taskStore.updateTask(edited)
+        taskStore.loadAllData()
+
+        XCTAssertEqual(taskStore.tasks.count, 2)
+        XCTAssertEqual(taskStore.tasks.first(where: { $0.id == first.id })?.status, "To Do")
+        XCTAssertEqual(taskStore.tasks.first(where: { $0.id == second.id })?.status, "In Progress")
+    }
+
     func testArchiveTasksRemovesFromTasksArray() throws {
         let plan = Plan(name: "Work", color: "blue")
         try taskStore.createPlan(plan)

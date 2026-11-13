@@ -90,8 +90,8 @@ struct MarkdownParser {
         ---
         id: \(task.id.uuidString)
         type: task
-        plan: \(task.plan)
-        status: \(task.status)
+        plan: \(yamlQuote(task.plan))
+        status: \(yamlQuote(task.status))
         order: \(task.order)
         """
         
@@ -113,7 +113,7 @@ struct MarkdownParser {
         if !task.tags.isEmpty {
             frontmatter += "\ntags:"
             for tag in task.tags {
-                frontmatter += "\n  - \(tag)"
+                frontmatter += "\n  - \(yamlQuote(tag))"
             }
         }
         
