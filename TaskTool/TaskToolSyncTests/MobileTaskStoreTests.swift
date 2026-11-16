@@ -57,6 +57,11 @@ final class MobileTaskStoreTests: XCTestCase {
         await store.sync()
         XCTAssertTrue(store.needsRecovery)
         XCTAssertFalse(store.canEdit)
+        let plan = try XCTUnwrap(store.plans.first)
+        let created = await store.createTask(title: "Blocked", planID: plan.id)
+        XCTAssertFalse(created)
+        let creations = await service.creations
+        XCTAssertEqual(creations, 0)
         await store.recover()
         XCTAssertFalse(store.needsRecovery)
         XCTAssertTrue(store.canEdit)
@@ -84,6 +89,11 @@ final class MobileTaskStoreTests: XCTestCase {
         XCTAssertFalse(store.canEdit)
         let saved = await store.save(task, status: "Finished", body: "Blocked")
         XCTAssertFalse(saved)
+        let plan = try XCTUnwrap(store.plans.first)
+        let created = await store.createTask(title: "Blocked", planID: plan.id)
+        XCTAssertFalse(created)
+        let creations = await service.creations
+        XCTAssertEqual(creations, 0)
         await store.sync()
         let syncs = await service.syncs
         XCTAssertEqual(syncs, 1)
@@ -143,6 +153,47 @@ final class MobileTaskStoreTests: XCTestCase {
         let resumedAttempts = await service.syncs
         XCTAssertEqual(resumedAttempts, 3)
     }
+
+    func testCreatingTaskReloadsFieldsAndSchedulesSyncAfterEditorCloses() async throws {
+        await store.connect(remoteURL: "https://github.com/example/tasks", token: "placeholder")
+        let plan = try XCTUnwrap(store.plans.first { $0.name == "First" })
+        let dueDate = Date(timeIntervalSince1970: 1_800_000_000)
+        let editorID = UUID()
+        store.setAutoSyncEditor(editorID, isOpen: true)
+        store.setAutoSyncActive(true)
+        let created = await store.createTask(
+            title: "Phone task", planID: plan.id, status: "Finished", dueDate: dueDate, body: "- [ ] Offline notes"
+        )
+        XCTAssertTrue(created)
+        let task = try XCTUnwrap(store.tasks.first { $0.title == "Phone task" })
+        XCTAssertEqual(task.plan, plan.name)
+        XCTAssertEqual(task.status, "Finished")
+        XCTAssertEqual(task.dueDate, dueDate)
+        XCTAssertEqual(task.body, "- [ ] Offline notes")
+        try await _Concurrency.Task.sleep(nanoseconds: 6_000_000_000)
+        let beforeClosing = await service.syncs
+        XCTAssertEqual(beforeClosing, 0)
+        store.setAutoSyncEditor(editorID, isOpen: false)
+        let deadline = Date().addingTimeInterval(3)
+        while Date() < deadline {
+            if await service.syncs > 0 && !store.isBusy { break }
+            try await _Concurrency.Task.sleep(nanoseconds: 20_000_000)
+        }
+        let afterClosing = await service.syncs
+        XCTAssertEqual(afterClosing, 1)
+    }
+
+    func testFailedCreationLeavesExistingTasksUntouched() async throws {
+        await store.connect(remoteURL: "https://github.com/example/tasks", token: "placeholder")
+        let plan = try XCTUnwrap(store.plans.first)
+        let before = store.tasks
+        await service.failCreation()
+        let created = await store.createTask(title: "Retained draft", planID: plan.id)
+        XCTAssertFalse(created)
+        XCTAssertEqual(store.tasks, before)
+        XCTAssertTrue(store.canEdit)
+        XCTAssertEqual(store.message, "Could not write task")
+    }
 }
 
 private actor MobileServiceStub: MobileGitService {
@@ -163,10 +214,12 @@ private actor MobileServiceStub: MobileGitService {
     private var openFails = false
     private var syncFails = false
     private var hasConflict = false
+    private var creationFails = false
     private var pauseSync = false
     private var started: CheckedContinuation<Void, Never>?
     private var paused: CheckedContinuation<Void, Never>?
     private(set) var syncs = 0
+    private(set) var creations = 0
 
     func clone(remoteURL: String, to directory: URL, token: String) {}
     func open(remoteURL: String, at directory: URL) throws {
@@ -190,9 +243,20 @@ private actor MobileServiceStub: MobileGitService {
         snapshot.tasks[index].task.status = status
         snapshot.tasks[index].task.body = body
     }
+    func createMobileTask(title: String, planID: UUID, status: String?, dueDate: Date?, body: String) throws {
+        creations += 1
+        if creationFails { throw GitSyncFailure(message: "Could not write task") }
+        guard let plan = snapshot.plans.first(where: { $0.id == planID }),
+              let status = status ?? plan.statuses.sorted(by: { $0.order < $1.order }).first?.name else {
+            throw GitSyncError.missingPlan
+        }
+        let task = Task(title: title, plan: plan.name, status: status, dueDate: dueDate, body: body)
+        snapshot.tasks.append(TaskSyncSnapshot(task: task, path: "\(plan.name)/\(task.fileName)"))
+    }
     func failOpen() { openFails = true }
     func failSyncWithRecovery() { syncFails = true }
     func setConflict(_ value: Bool) { hasConflict = value }
+    func failCreation() { creationFails = true }
     func pauseNextSync() { pauseSync = true }
     func waitForSync() async {
         if syncs > 0 { return }

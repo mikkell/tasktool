@@ -38,6 +38,12 @@ public struct GitSyncFailure: LocalizedError {
             message = "Git sync currently requires the main branch."
         case GitSyncError.changedRemote:
             message = "The checkout's remote does not match its configured GitHub repository."
+        case GitSyncError.invalidTaskTitle:
+            message = "Enter a non-empty task title on a single line."
+        case GitSyncError.missingPlan:
+            message = "The selected plan is no longer available. Choose another plan."
+        case GitSyncError.invalidTaskStatus:
+            message = "Choose a status that belongs to the selected plan."
         case GitSyncError.invalidMetadata(let path), GitSyncError.unsupportedFile(let path):
             message = "Sync cannot safely process \(path). Check its format, IDs and file type."
         case GitSyncError.pushRejected:
@@ -120,6 +126,13 @@ public actor GitSyncClient {
         do {
             guard let repository else { throw GitSyncError.wrongBranch }
             try await repository.saveMobileTask(expected, status: status, body: body)
+        } catch { throw await failure(error) }
+    }
+
+    func createMobileTask(title: String, planID: UUID, status: String?, dueDate: Date?, body: String) async throws {
+        do {
+            guard let repository else { throw GitSyncError.wrongBranch }
+            try await repository.createMobileTask(title: title, planID: planID, status: status, dueDate: dueDate, body: body)
         } catch { throw await failure(error) }
     }
 

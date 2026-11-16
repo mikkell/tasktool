@@ -18,6 +18,9 @@ enum GitSyncError: Error {
     case pushRejected
     case recoveryRequired
     case localFileChanged(String)
+    case invalidTaskTitle
+    case missingPlan
+    case invalidTaskStatus
 }
 
 enum GitSyncFiles {

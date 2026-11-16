@@ -74,6 +74,53 @@ actor EmbeddedGitRepository {
         return try GitSyncFiles.decode(workingFiles(tracked: files())).0
     }
 
+    func createMobileTask(
+        title: String, planID: UUID, status: String? = nil, dueDate: Date? = nil, body: String = ""
+    ) throws {
+        let snapshot = try mobileSnapshot()
+        let title = title.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !title.isEmpty, title.rangeOfCharacter(from: .newlines) == nil else {
+            throw GitSyncError.invalidTaskTitle
+        }
+        guard let plan = snapshot.plans.first(where: { $0.id == planID }) else { throw GitSyncError.missingPlan }
+        guard let statusName = status ?? plan.statuses.sorted(by: { $0.order < $1.order }).first?.name,
+              let selectedStatus = plan.statuses.first(where: { $0.name == statusName }) else {
+            throw GitSyncError.invalidTaskStatus
+        }
+        let lastOrder = snapshot.tasks.filter {
+            $0.path.split(separator: "/").count == 2 && $0.task.plan == plan.name && $0.task.status == statusName
+        }.map(\.task.order).max() ?? -1
+        guard lastOrder < Int.max else { throw GitSyncError.invalidMetadata("\(plan.name)/plan.yaml") }
+        let now = Date()
+        let task = Task(
+            title: title, plan: plan.name, status: statusName, dueDate: dueDate,
+            created: now, updated: now, completedAt: selectedStatus.isDoneStatus ? now : nil,
+            body: body, order: lastOrder + 1
+        )
+        var current = try workingFiles(tracked: files())
+        let occupied = Set(current.keys.map { $0.precomposedStringWithCanonicalMapping.lowercased() })
+        let slug = String(task.fileName.dropLast(3))
+        var path = "\(plan.name)/\(task.fileName)"
+        var suffix = 0
+        while true {
+            let key = path.precomposedStringWithCanonicalMapping.lowercased()
+            let destination = try safeURL(path)
+            if !occupied.contains(key), !occupied.contains(where: { $0.hasPrefix(key + "/") }),
+               !manager.fileExists(atPath: destination.path) { break }
+            suffix += 1
+            let unique = task.id.uuidString.lowercased().prefix(8)
+            path = "\(plan.name)/\(slug)-\(unique)\(suffix == 1 ? "" : "-\(suffix)").md"
+        }
+        var ignored: Int32 = 0
+        try Self.check(git_ignore_path_is_ignored(&ignored, pointer, path), "check ignored path")
+        guard ignored == 0 else { throw GitSyncError.unsupportedFile(path) }
+        let data = Data(MarkdownParser.serializeTask(task).utf8)
+        current[path] = GitSyncFile(data: data)
+        _ = try GitSyncFiles.reconcile(base: current, local: current, remote: current)
+        // Exclusive creation protects existing files without cloud-hostile atomic replacement.
+        try data.write(to: safeURL(path), options: .withoutOverwriting)
+    }
+
     func saveMobileTask(_ expected: Task, status: String, body: String) throws {
         let snapshot = try mobileSnapshot()
         guard let entry = snapshot.tasks.first(where: { $0.task.id == expected.id }),

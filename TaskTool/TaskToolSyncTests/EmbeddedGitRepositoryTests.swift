@@ -118,6 +118,102 @@ final class EmbeddedGitRepositoryTests: XCTestCase {
         XCTAssertEqual(onDisk.tasks.first?.task, updated)
     }
 
+    func testMobileCreationRoutesToSelectedPlanAndSyncsCustomStatusesAndDueDate() async throws {
+        let (mac, phone, _) = try await seed()
+        let plan = Plan(name: "Personal", statuses: [
+            Plan.TaskStatus(name: "Doing", color: "blue", order: 1),
+            Plan.TaskStatus(name: "Queued", color: "gray", order: 0),
+            Plan.TaskStatus(name: "Done", color: "green", order: 2)
+        ])
+        try write(Data(MarkdownParser.serializePlan(plan).utf8), path: "Personal/plan.yaml", at: macURL)
+        let originalHead = try await mac.head()
+        let dueDate = Date(timeIntervalSince1970: 1_800_000_000)
+        try await mac.createMobileTask(title: "  Default status  ", planID: plan.id)
+        try await mac.createMobileTask(
+            title: "Custom status", planID: plan.id, status: "Doing", dueDate: dueDate, body: "- [ ] Offline notes\n\n## Details"
+        )
+        try await mac.createMobileTask(title: "Completed task", planID: plan.id, status: "Done")
+        let local = try await mac.mobileSnapshot()
+        let defaultTask = try XCTUnwrap(local.tasks.first { $0.task.title == "Default status" })
+        XCTAssertEqual(defaultTask.task.status, "Queued")
+        XCTAssertEqual(defaultTask.path, "Personal/default-status.md")
+        XCTAssertNil(defaultTask.task.dueDate)
+        let custom = try XCTUnwrap(local.tasks.first { $0.task.title == "Custom status" })
+        XCTAssertEqual(custom.path, "Personal/custom-status.md")
+        XCTAssertEqual(custom.task.plan, "Personal")
+        XCTAssertEqual(custom.task.status, "Doing")
+        XCTAssertEqual(custom.task.dueDate, dueDate)
+        XCTAssertEqual(custom.task.body, "- [ ] Offline notes\n\n## Details")
+        XCTAssertEqual(custom.task.created, custom.task.updated)
+        XCTAssertNil(custom.task.completedAt)
+        XCTAssertNotNil(local.tasks.first { $0.task.title == "Completed task" }?.task.completedAt)
+        let afterCreationHead = try await mac.head()
+        XCTAssertEqual(afterCreationHead, originalHead, "Offline creation must not commit or push.")
+        let remoteBeforeSync = try await phone.mobileSnapshot()
+        XCTAssertFalse(remoteBeforeSync.tasks.contains { $0.task.id == custom.task.id })
+        try await mac.commitWorkingCopy(message: "Create offline phone tasks")
+        try await mac.synchronize()
+        try await phone.synchronize()
+        let received = try await phone.mobileSnapshot()
+        XCTAssertEqual(received.tasks.first { $0.task.id == custom.task.id }, custom)
+    }
+
+    func testMobileCreationAvoidsDuplicateSlugsAndUsesUUIDForEmptySlugs() async throws {
+        let (mac, _, original) = try await seed()
+        let snapshot = try await mac.mobileSnapshot()
+        let plan = try XCTUnwrap(snapshot.plans.first)
+        let originalBytes = try Data(contentsOf: macURL.appendingPathComponent("Work/example.md"))
+        try await mac.createMobileTask(title: "Example", planID: plan.id)
+        try await mac.createMobileTask(title: "EXAMPLE", planID: plan.id)
+        try await mac.createMobileTask(title: "\u{1F4DD}", planID: plan.id)
+        let created = try await mac.mobileSnapshot()
+        XCTAssertEqual(created.tasks.count, 4)
+        XCTAssertEqual(Set(created.tasks.map { $0.path.lowercased() }).count, 4)
+        XCTAssertEqual(try Data(contentsOf: macURL.appendingPathComponent("Work/example.md")), originalBytes)
+        XCTAssertEqual(created.tasks.first { $0.task.id == original.id }, snapshot.tasks.first { $0.task.id == original.id })
+        let duplicates = created.tasks.filter { $0.task.title.lowercased() == "example" && $0.task.id != original.id }
+        for duplicate in duplicates {
+            XCTAssertEqual(duplicate.path, "Work/example-\(duplicate.task.id.uuidString.lowercased().prefix(8)).md")
+        }
+        XCTAssertEqual(duplicates.map(\.task.order).sorted(), [1, 2])
+        let emoji = try XCTUnwrap(created.tasks.first { $0.task.title == "\u{1F4DD}" })
+        XCTAssertEqual(emoji.path, "Work/\(emoji.task.id.uuidString.lowercased().prefix(8)).md")
+    }
+
+    func testMobileCreationRejectsInvalidInputsWithoutWritingFiles() async throws {
+        let (mac, _, _) = try await seed()
+        let before = try await mac.mobileSnapshot()
+        let plan = try XCTUnwrap(before.plans.first)
+        for title in [" \n ", "First line\nSecond line"] {
+            do {
+                try await mac.createMobileTask(title: title, planID: plan.id)
+                XCTFail("Expected invalid title rejection")
+            } catch GitSyncError.invalidTaskTitle {}
+        }
+        do {
+            try await mac.createMobileTask(title: "Missing plan", planID: UUID())
+            XCTFail("Expected missing plan rejection")
+        } catch GitSyncError.missingPlan {}
+        do {
+            try await mac.createMobileTask(title: "Wrong status", planID: plan.id, status: "Not a status")
+            XCTFail("Expected unknown status rejection")
+        } catch GitSyncError.invalidTaskStatus {}
+        let after = try await mac.mobileSnapshot()
+        XCTAssertEqual(after, before)
+    }
+
+    func testMobileCreationDoesNotWriteTasksThatGitWouldIgnore() async throws {
+        let (mac, _, _) = try await seed()
+        let snapshot = try await mac.mobileSnapshot()
+        let plan = try XCTUnwrap(snapshot.plans.first)
+        try write(Data("Work/ignored.md\n".utf8), path: ".gitignore", at: macURL)
+        do {
+            try await mac.createMobileTask(title: "Ignored", planID: plan.id)
+            XCTFail("Expected ignored-file rejection")
+        } catch GitSyncError.unsupportedFile("Work/ignored.md") {}
+        XCTAssertFalse(FileManager.default.fileExists(atPath: macURL.appendingPathComponent("Work/ignored.md").path))
+    }
+
     func testMobileBundleNotesAreEditableButStatusChangesAreRejected() async throws {
         let (mac, _, original) = try await seed()
         let bundleID = UUID()

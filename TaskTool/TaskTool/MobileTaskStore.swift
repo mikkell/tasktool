@@ -26,6 +26,7 @@ protocol MobileGitService: Actor {
     func updateToken(_ token: String) async throws
     func mobileSnapshot() async throws -> RepositorySyncSnapshot
     func saveMobileTask(_ expected: Task, status: String, body: String) async throws
+    func createMobileTask(title: String, planID: UUID, status: String?, dueDate: Date?, body: String) async throws
 }
 
 extension GitSyncClient: MobileGitService {}
@@ -150,15 +151,37 @@ public final class MobileTaskStore: ObservableObject {
         do {
             try await client.saveMobileTask(task.value, status: status, body: body)
             try await reload()
-            autoSync.recordEdit()
-            message = autoSync.isPaused
-                ? "Saved on this device. Automatic sync is paused; resolve conflicts before using Sync Now."
-                : "Saved on this device. Automatic sync will share your edits."
+            didSaveLocally()
             return true
         } catch {
             show(error)
             return false
         }
+    }
+
+    @discardableResult
+    public func createTask(
+        title: String, planID: UUID, status: String? = nil, dueDate: Date? = nil, body: String = ""
+    ) async -> Bool {
+        guard canEdit else { return false }
+        begin("Creating task locally...", clearConflicts: false)
+        defer { isBusy = false }
+        do {
+            try await client.createMobileTask(title: title, planID: planID, status: status, dueDate: dueDate, body: body)
+            try await reload()
+            didSaveLocally()
+            return true
+        } catch {
+            show(error)
+            return false
+        }
+    }
+
+    private func didSaveLocally() {
+        autoSync.recordEdit()
+        message = autoSync.isPaused
+            ? "Saved on this device. Automatic sync is paused; resolve conflicts before using Sync Now."
+            : "Saved on this device. Automatic sync will share your edits."
     }
 
     public func recover() async {

@@ -4,6 +4,7 @@ import TaskToolCore
 struct PhoneContentView: View {
     @EnvironmentObject private var store: MobileTaskStore
     @State private var showingSettings = false
+    @State private var newTaskPlan: MobilePlan?
     @Environment(\.scenePhase) private var scenePhase
 
     var body: some View {
@@ -38,6 +39,12 @@ struct PhoneContentView: View {
             .toolbar {
                 if store.isConfigured {
                     ToolbarItem(placement: .topBarTrailing) {
+                        Button("New Task", systemImage: "plus") {
+                            newTaskPlan = store.plans.first { !$0.statuses.isEmpty }
+                        }
+                        .disabled(!store.canEdit || store.plans.allSatisfy { $0.statuses.isEmpty })
+                    }
+                    ToolbarItem(placement: .topBarTrailing) {
                         Button("Settings", systemImage: "gearshape") { showingSettings = true }
                     }
                 }
@@ -70,6 +77,9 @@ struct PhoneContentView: View {
                         }
                 }
             }
+            .sheet(item: $newTaskPlan) { plan in
+                PhoneNewTaskView(plan: plan)
+            }
         }
         .task {
             await store.restoreIfNeeded()
@@ -84,6 +94,7 @@ struct PhoneContentView: View {
 private struct PhonePlanView: View {
     @EnvironmentObject private var store: MobileTaskStore
     let planID: UUID
+    @State private var showingNewTask = false
 
     var body: some View {
         Group {
@@ -116,6 +127,15 @@ private struct PhonePlanView: View {
                     }
                 }
                 .navigationTitle(plan.name)
+                .toolbar {
+                    ToolbarItem(placement: .topBarTrailing) {
+                        Button("New Task", systemImage: "plus") { showingNewTask = true }
+                            .disabled(!store.canEdit || plan.statuses.isEmpty)
+                    }
+                }
+                .sheet(isPresented: $showingNewTask) {
+                    PhoneNewTaskView(plan: plan)
+                }
             } else {
                 ContentUnavailableView("Plan Unavailable", systemImage: "folder")
             }
