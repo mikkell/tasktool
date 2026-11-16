@@ -18,7 +18,7 @@ struct PhoneSyncSettings: View {
                         .keyboardType(.URL)
                         .accessibilityIdentifier("repositoryURL")
                 }
-                Text("Use a dedicated task-data repository on its main branch, not the TaskTool source repository. Files stay in this app's local checkout. Sync is manual.")
+                Text("Use a dedicated task-data repository on its main branch, not the TaskTool source repository. Files stay in this app's local checkout.")
                     .font(.caption).foregroundStyle(.secondary)
             }
             Section("Authentication") {
@@ -43,6 +43,8 @@ struct PhoneSyncSettings: View {
                           (!store.isConfigured && remoteURL.isEmpty))
             }
             Section("Status") {
+                Text("While active: sync 5 seconds after edits, every 5 minutes, and on returning to the app. Offline changes retry later. Conflicts pause automatic sync; resolve them before using Sync Now. Background sync is not scheduled.")
+                    .font(.caption).foregroundStyle(.secondary)
                 if store.isBusy { ProgressView() }
                 Text(store.message).textSelection(.enabled)
                 ForEach(Array(store.conflicts.enumerated()), id: \.offset) { _, conflict in

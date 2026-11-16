@@ -28,6 +28,7 @@ public struct GitSyncFailure: LocalizedError {
             details = conflicts.map { "\(String(describing: $0.entity)): \($0.field)" }.sorted()
         case GitSyncError.fileConflict(let path):
             message = "Conflicting file changes: \(path). Both committed versions remain in Git."
+            details = [path]
         case GitSyncError.recoveryRequired, GitSyncError.localFileChanged:
             message = "An interrupted sync needs recovery. Recovery will not overwrite unexpected local changes."
             recovery = true

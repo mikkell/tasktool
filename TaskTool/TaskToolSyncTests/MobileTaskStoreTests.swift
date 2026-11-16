@@ -18,6 +18,7 @@ final class MobileTaskStoreTests: XCTestCase {
     }
 
     override func tearDown() async throws {
+        store?.setAutoSyncActive(false)
         store = nil
         defaults.removePersistentDomain(forName: suite)
         if FileManager.default.fileExists(atPath: root.path) { try FileManager.default.removeItem(at: root) }
@@ -91,6 +92,57 @@ final class MobileTaskStoreTests: XCTestCase {
         XCTAssertTrue(store.canEdit)
         XCTAssertEqual(store.tasks.first?.body, task.body)
     }
+
+    func testAutomaticSyncDefersWhileEditorIsOpenAndSyncsSavedNotesAfterClosing() async throws {
+        await store.connect(remoteURL: "https://github.com/example/tasks", token: "placeholder")
+        let task = try XCTUnwrap(store.tasks.first)
+        let editorID = UUID()
+        store.setAutoSyncEditor(editorID, isOpen: true)
+        store.setAutoSyncActive(true)
+        let saved = await store.save(task, status: "Finished", body: "Offline draft")
+        XCTAssertTrue(saved)
+        try await _Concurrency.Task.sleep(nanoseconds: 6_000_000_000)
+        let whileEditing = await service.syncs
+        XCTAssertEqual(whileEditing, 0)
+        store.setAutoSyncEditor(editorID, isOpen: false)
+        let deadline = Date().addingTimeInterval(3)
+        while Date() < deadline {
+            if await service.syncs > 0 && !store.isBusy { break }
+            try await _Concurrency.Task.sleep(nanoseconds: 20_000_000)
+        }
+        let afterClosing = await service.syncs
+        XCTAssertEqual(afterClosing, 1)
+        XCTAssertEqual(store.tasks.first?.body, "Offline draft")
+        XCTAssertEqual(store.message, "Synced successfully.")
+    }
+
+    func testConflictPausesAutomaticSyncAcrossEditsAndForegroundUntilManualSuccess() async throws {
+        await store.connect(remoteURL: "https://github.com/example/tasks", token: "placeholder")
+        await service.setConflict(true)
+        await store.sync()
+        XCTAssertFalse(store.conflicts.isEmpty)
+        let task = try XCTUnwrap(store.tasks.first)
+        let saved = await store.save(task, status: task.status, body: "Retained offline")
+        XCTAssertTrue(saved)
+        XCTAssertFalse(store.conflicts.isEmpty)
+        XCTAssertTrue(store.message.contains("paused"))
+        store.setAutoSyncActive(true)
+        try await _Concurrency.Task.sleep(nanoseconds: 6_000_000_000)
+        let pausedAttempts = await service.syncs
+        XCTAssertEqual(pausedAttempts, 1)
+        await service.setConflict(false)
+        await store.sync()
+        XCTAssertTrue(store.conflicts.isEmpty)
+        store.setAutoSyncActive(false)
+        store.setAutoSyncActive(true)
+        let deadline = Date().addingTimeInterval(3)
+        while Date() < deadline {
+            if await service.syncs >= 3 && !store.isBusy { break }
+            try await _Concurrency.Task.sleep(nanoseconds: 20_000_000)
+        }
+        let resumedAttempts = await service.syncs
+        XCTAssertEqual(resumedAttempts, 3)
+    }
 }
 
 private actor MobileServiceStub: MobileGitService {
@@ -110,6 +162,7 @@ private actor MobileServiceStub: MobileGitService {
     )
     private var openFails = false
     private var syncFails = false
+    private var hasConflict = false
     private var pauseSync = false
     private var started: CheckedContinuation<Void, Never>?
     private var paused: CheckedContinuation<Void, Never>?
@@ -125,6 +178,7 @@ private actor MobileServiceStub: MobileGitService {
         started = nil
         if pauseSync { await withCheckedContinuation { paused = $0 } }
         if syncFails { throw GitSyncFailure(message: "Interrupted", requiresRecovery: true) }
+        if hasConflict { throw GitSyncFailure(message: "Conflict", conflicts: ["task: body"]) }
     }
     func recover() { syncFails = false }
     func updateToken(_ token: String) {}
@@ -138,6 +192,7 @@ private actor MobileServiceStub: MobileGitService {
     }
     func failOpen() { openFails = true }
     func failSyncWithRecovery() { syncFails = true }
+    func setConflict(_ value: Bool) { hasConflict = value }
     func pauseNextSync() { pauseSync = true }
     func waitForSync() async {
         if syncs > 0 { return }

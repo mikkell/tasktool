@@ -4,6 +4,7 @@ import TaskToolCore
 struct PhoneContentView: View {
     @EnvironmentObject private var store: MobileTaskStore
     @State private var showingSettings = false
+    @Environment(\.scenePhase) private var scenePhase
 
     var body: some View {
         NavigationStack {
@@ -70,7 +71,13 @@ struct PhoneContentView: View {
                 }
             }
         }
-        .task { await store.restoreIfNeeded() }
+        .task {
+            await store.restoreIfNeeded()
+            store.setAutoSyncActive(scenePhase == .active)
+        }
+        .onChange(of: scenePhase) { _, phase in
+            store.setAutoSyncActive(phase == .active)
+        }
     }
 }
 
@@ -124,6 +131,7 @@ private struct PhoneTaskEditor: View {
     @State private var status: String
     @State private var bodyText: String
     @State private var showingError = false
+    @State private var editorID = UUID()
 
     init(task: MobileTask, statuses: [String]) {
         self.task = task
@@ -151,11 +159,13 @@ private struct PhoneTaskEditor: View {
                     .accessibilityLabel("Task notes")
             }
             Section {
-                Text("Save writes to this iPhone immediately, even offline. Sync Now shares your changes.")
+                Text("Save writes to this iPhone immediately, even offline. Automatic sync shares saved changes after a short delay while the app is active.")
                     .font(.caption).foregroundStyle(.secondary)
             }
         }
         .disabled(!store.canEdit)
+        .onAppear { store.setAutoSyncEditor(editorID, isOpen: true) }
+        .onDisappear { store.setAutoSyncEditor(editorID, isOpen: false) }
         .navigationTitle("Edit Task")
         .navigationBarTitleDisplayMode(.inline)
         .navigationBarBackButtonHidden(status != task.status || bodyText != task.body)

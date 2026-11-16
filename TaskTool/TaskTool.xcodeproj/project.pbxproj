@@ -40,6 +40,7 @@
 		A10000000000000000000003 /* Exceptions for "TaskTool" folder in "TaskTool" target */ = {
 			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
 			membershipExceptions = (
+				AutoSyncScheduler.swift,
 				EmbeddedGitRepository.swift,
 				GitHubCredentials.swift,
 				GitSyncClient.swift,

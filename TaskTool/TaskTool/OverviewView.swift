@@ -323,12 +323,15 @@ struct OverviewView: View {
         .sheet(item: $taskToOpen) { task in
             if task.isBundle {
                 BundleDetailView(bundle: task)
+                    .modifier(DeferAutomaticSync())
             } else {
                 TaskDetailView(task: task)
+                    .modifier(DeferAutomaticSync())
             }
         }
         .sheet(item: $taskForDueDate) { task in
             OverviewDueDateSheet(task: task)
+                .modifier(DeferAutomaticSync())
         }
         .alert("Overview Error", isPresented: $showingError) {
             Button("OK", role: .cancel) {}

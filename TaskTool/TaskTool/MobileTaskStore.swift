@@ -50,6 +50,22 @@ public final class MobileTaskStore: ObservableObject {
     private let defaults: UserDefaults
     private let repositoriesURL: URL
     private var didRestore = false
+    private var openEditors: Set<UUID> = []
+    private lazy var autoSync = AutoSyncScheduler(
+        canSync: { [weak self] in
+            guard let self else { return false }
+            return self.canEdit && self.openEditors.isEmpty
+        },
+        sync: { [weak self] in await self?.sync() }
+    )
+
+    public func setAutoSyncActive(_ active: Bool) {
+        autoSync.setActive(active)
+    }
+
+    public func setAutoSyncEditor(_ id: UUID, isOpen: Bool) {
+        if isOpen { openEditors.insert(id) } else { openEditors.remove(id) }
+    }
 
     public convenience init() {
         let support = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
@@ -88,7 +104,9 @@ public final class MobileTaskStore: ObservableObject {
             defaults.set(id, forKey: "mobileGitRepositoryID")
             self.remoteURL = remote
             storageUnavailable = false
-            message = "Connected. Edits are saved offline; sync is manual."
+            autoSync.setPaused(false)
+            autoSync.requestSync()
+            message = "Connected. Automatic sync is enabled while the app is active."
         } catch { show(error) }
     }
 
@@ -106,17 +124,20 @@ public final class MobileTaskStore: ObservableObject {
             try await reload()
             needsRecovery = false
             storageUnavailable = false
-            message = "Local tasks ready. Sync when you are online."
+            autoSync.requestSync()
+            message = "Local tasks ready. Automatic sync will catch up when online."
         } catch { show(error) }
     }
 
     public func sync() async {
         guard canEdit else { return }
+        autoSync.recordSyncAttempt()
         begin("Syncing...")
         defer { isBusy = false }
         do {
             try await client.sync()
             try await reload()
+            autoSync.setPaused(false)
             message = "Synced successfully."
         } catch { show(error) }
     }
@@ -124,12 +145,15 @@ public final class MobileTaskStore: ObservableObject {
     @discardableResult
     public func save(_ task: MobileTask, status: String, body: String) async -> Bool {
         guard canEdit else { return false }
-        begin("Saving locally...")
+        begin("Saving locally...", clearConflicts: false)
         defer { isBusy = false }
         do {
             try await client.saveMobileTask(task.value, status: status, body: body)
             try await reload()
-            message = "Saved on this device. Sync to share your edits."
+            autoSync.recordEdit()
+            message = autoSync.isPaused
+                ? "Saved on this device. Automatic sync is paused; resolve conflicts before using Sync Now."
+                : "Saved on this device. Automatic sync will share your edits."
             return true
         } catch {
             show(error)
@@ -146,24 +170,27 @@ public final class MobileTaskStore: ObservableObject {
             try await reload()
             needsRecovery = false
             storageUnavailable = false
+            autoSync.setPaused(false)
+            autoSync.requestSync()
             message = "Recovered local tasks. Sync again when online."
         } catch { show(error) }
     }
 
     public func updateToken(_ token: String) async {
         guard isConfigured, !isBusy else { return }
-        begin("Updating token...")
+        begin("Updating token...", clearConflicts: false)
         defer { isBusy = false }
         do {
             try await client.updateToken(token)
+            autoSync.requestSync()
             message = "Token updated."
         } catch { show(error) }
     }
 
-    private func begin(_ message: String) {
+    private func begin(_ message: String, clearConflicts: Bool = true) {
         isBusy = true
         self.message = message
-        conflicts = []
+        if clearConflicts { conflicts = [] }
     }
 
     private func reload() async throws {
@@ -194,5 +221,6 @@ public final class MobileTaskStore: ObservableObject {
         message = failure.message
         conflicts = failure.conflicts
         needsRecovery = needsRecovery || failure.requiresRecovery
+        if !failure.conflicts.isEmpty || failure.requiresRecovery { autoSync.setPaused(true) }
     }
 }

@@ -52,6 +52,9 @@ struct GitSyncSettingsTab: View {
                 }
             }
             Section("Status") {
+                Text("While active: sync 5 seconds after edits, every 5 minutes, and on returning to the app. Offline changes retry later. Conflicts pause automatic sync; resolve them before using Sync Now.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
                 HStack {
                     if taskStore.isSyncing { ProgressView().controlSize(.small) }
                     Text(taskStore.gitSyncMessage)

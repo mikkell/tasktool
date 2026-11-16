@@ -80,6 +80,15 @@ class TaskStore: ObservableObject {
     private let defaults: UserDefaults
     private let gitRepositoriesURL: URL?
     private var didLoadStoredLocation = false
+    private var isLoadingData = false
+    private var openEditors: Set<UUID> = []
+    private lazy var autoSync = AutoSyncScheduler(
+        canSync: { [weak self] in
+            guard let self else { return false }
+            return self.gitRemoteURL != nil && self.canEditStorage && self.openEditors.isEmpty
+        },
+        sync: { [weak self] in await self?.syncGit() }
+    )
     private var fileWatcher: DispatchSourceFileSystemObject?
     private var planWatchers: [String: DispatchSourceFileSystemObject] = [:]  // keyed by plan folder name
     private var isSaving = false  // Flag to prevent reload during save
@@ -196,7 +205,9 @@ class TaskStore: ObservableObject {
             storageURL = directory
             gitRemoteURL = remote
             gitStorageUnavailable = false
-            gitSyncMessage = "Connected. Sync is manual; local edits are saved immediately."
+            autoSync.setPaused(false)
+            autoSync.requestSync()
+            gitSyncMessage = "Connected. Automatic sync is enabled while the app is active."
         } catch {
             showGitFailure(error)
         }
@@ -222,6 +233,7 @@ class TaskStore: ObservableObject {
         do {
             try await gitClient.open(remoteURL: remote, at: directory)
             gitStorageUnavailable = false
+            autoSync.requestSync()
             gitSyncMessage = "Ready to sync."
         } catch {
             showGitFailure(error)
@@ -230,10 +242,12 @@ class TaskStore: ObservableObject {
 
     func syncGit() async {
         guard gitRemoteURL != nil, canEditStorage else { return }
+        autoSync.recordSyncAttempt()
         beginGitOperation("Syncing...")
         defer { endGitOperation() }
         do {
             try await gitClient.sync()
+            autoSync.setPaused(false)
             gitSyncMessage = "Synced successfully."
         } catch {
             showGitFailure(error)
@@ -248,6 +262,8 @@ class TaskStore: ObservableObject {
             try await gitClient.recover()
             needsGitRecovery = false
             gitStorageUnavailable = false
+            autoSync.setPaused(false)
+            autoSync.requestSync()
             gitSyncMessage = "Recovery completed. Sync again to publish local commits."
         } catch {
             showGitFailure(error)
@@ -260,6 +276,7 @@ class TaskStore: ObservableObject {
         defer { endGitOperation() }
         do {
             try await gitClient.updateToken(token)
+            autoSync.requestSync()
             gitSyncMessage = "Token updated."
         } catch {
             showGitFailure(error)
@@ -277,6 +294,8 @@ class TaskStore: ObservableObject {
             gitRemoteURL = nil
             needsGitRecovery = false
             gitStorageUnavailable = false
+            autoSync.setPaused(false)
+            autoSync.recordSyncAttempt()
             storageURL = nil
             plans = []
             tasks = []
@@ -313,9 +332,18 @@ class TaskStore: ObservableObject {
             gitSyncMessage = failure.message
             gitSyncConflicts = failure.conflicts
             needsGitRecovery = needsGitRecovery || failure.requiresRecovery
+            if !failure.conflicts.isEmpty || failure.requiresRecovery { autoSync.setPaused(true) }
         } else {
             gitSyncMessage = "Git setup or sync failed. Check storage access and repository configuration."
         }
+    }
+
+    func setAutoSyncActive(_ active: Bool) {
+        autoSync.setActive(active)
+    }
+
+    func setAutoSyncEditor(_ id: UUID, isOpen: Bool) {
+        if isOpen { openEditors.insert(id) } else { openEditors.remove(id) }
     }
 
     private func requireWritableStorage() throws {
@@ -394,6 +422,8 @@ class TaskStore: ObservableObject {
     func loadAllData() {
         guard canEditStorage else { return }
         guard let storageURL = storageURL else { return }
+        isLoadingData = true
+        defer { isLoadingData = false }
         
         plans = []
         tasks = []
@@ -513,6 +543,7 @@ class TaskStore: ObservableObject {
     /// Suppresses file-watcher reloads for 2.5 s — long enough for OneDrive to finish syncing.
     /// Each call cancels the previous timer, so consecutive saves extend the window correctly.
     private func markSaving() {
+        if !isLoadingData && gitRemoteURL != nil { autoSync.recordEdit() }
         isSaving = true
         // Cancel any reload that was queued before this write started.
         reloadDebounceWork?.cancel()

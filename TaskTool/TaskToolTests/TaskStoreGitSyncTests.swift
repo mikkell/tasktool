@@ -33,6 +33,7 @@ final class TaskStoreGitSyncTests: XCTestCase {
     }
 
     override func tearDown() async throws {
+        store?.setAutoSyncActive(false)
         store = nil
         service = nil
         if let root { try FileManager.default.removeItem(at: root) }
@@ -122,6 +123,40 @@ final class TaskStoreGitSyncTests: XCTestCase {
         XCTAssertEqual(disconnects, 1)
     }
 
+    func testAutomaticSyncFollowsCreationAndEditsWithoutReloadLoop() async throws {
+        await connect()
+        store.setAutoSyncActive(true)
+        try await waitForSyncCount(1)
+        let created = TaskTool.Task(title: "Automatic", plan: "Work", status: "To Do")
+        try store.createTask(created)
+        try await _Concurrency.Task.sleep(nanoseconds: 2_000_000_000)
+        var edited = created
+        edited.body = "Updated before debounce expires"
+        try store.updateTask(edited)
+        try await _Concurrency.Task.sleep(nanoseconds: 2_000_000_000)
+        let beforeDeadline = await service.syncs
+        XCTAssertEqual(beforeDeadline, 1)
+        try await waitForSyncCount(2)
+        store.loadAllData()
+        try await _Concurrency.Task.sleep(nanoseconds: 6_000_000_000)
+        let afterReload = await service.syncs
+        XCTAssertEqual(afterReload, 2, "Reloading settings after a sync must not create a sync loop.")
+        store.setAutoSyncActive(false)
+        try store.updateTask(edited)
+        try await _Concurrency.Task.sleep(nanoseconds: 6_000_000_000)
+        let afterInactiveEdit = await service.syncs
+        XCTAssertEqual(afterInactiveEdit, 2)
+    }
+
+    private func waitForSyncCount(_ expected: Int) async throws {
+        let deadline = Date().addingTimeInterval(10)
+        while Date() < deadline {
+            if await service.syncs >= expected && !store.isSyncing { return }
+            try await _Concurrency.Task.sleep(nanoseconds: 20_000_000)
+        }
+        XCTFail("Timed out waiting for automatic sync \(expected)")
+    }
+
     private func connect() async {
         await store.configureGitSync(remoteURL: "https://github.com/example/task-data", token: "test-placeholder")
     }
@@ -137,6 +172,7 @@ private actor MockGitService: TaskStoreGitService {
     private var paused: CheckedContinuation<Void, Never>?
     private(set) var recoveries = 0
     private(set) var disconnects = 0
+    private(set) var syncs = 0
 
     init(files: [String: Data]) { self.files = files }
 
@@ -153,6 +189,7 @@ private actor MockGitService: TaskStoreGitService {
     }
 
     func sync() async throws {
+        syncs += 1
         syncStarted = true
         started?.resume()
         started = nil

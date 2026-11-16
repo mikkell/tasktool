@@ -225,6 +225,17 @@ private struct UndoToastView: View {
     }
 }
 
+struct DeferAutomaticSync: ViewModifier {
+    @EnvironmentObject private var taskStore: TaskStore
+    @State private var editorID = UUID()
+
+    func body(content: Content) -> some View {
+        content
+            .onAppear { taskStore.setAutoSyncEditor(editorID, isOpen: true) }
+            .onDisappear { taskStore.setAutoSyncEditor(editorID, isOpen: false) }
+    }
+}
+
 struct ContentView: View {
     @EnvironmentObject var taskStore: TaskStore
     @State private var showingFolderPicker = false
@@ -385,9 +396,11 @@ struct ContentView: View {
             }
             .sheet(isPresented: $showingNewPlan) {
                 NewPlanView()
+                    .modifier(DeferAutomaticSync())
             }
             .sheet(item: $editingPlan) { plan in
                 EditPlanView(plan: plan)
+                    .modifier(DeferAutomaticSync())
             }
             .alert("Delete Plan", isPresented: Binding(
                 get: { planToDelete != nil },
@@ -797,9 +810,11 @@ struct PlanDetailView: View {
             }
             .sheet(isPresented: $showingNewTask) {
                 NewTaskView(plan: plan)
+                    .modifier(DeferAutomaticSync())
             }
             .sheet(isPresented: $showingEditStatuses) {
                 EditStatusesView(plan: plan)
+                    .modifier(DeferAutomaticSync())
             }
             .sheet(isPresented: $showingArchiveConfirmation) {
                 ArchiveTasksSheet(
@@ -807,6 +822,7 @@ struct PlanDetailView: View {
                     defaultName: defaultArchiveFolderName,
                     onArchive: { folderName in archiveDoneTasks(subfolder: folderName) }
                 )
+                .modifier(DeferAutomaticSync())
             }
             .alert("Delete \(selectedTaskIDs.count) Task\(selectedTaskIDs.count == 1 ? "" : "s")?", isPresented: $showingBulkDeleteConfirm) {
                 Button("Cancel", role: .cancel) {}
@@ -1016,12 +1032,15 @@ struct KanbanColumn: View {
         }
         .sheet(item: $selectedTask) { task in
             TaskDetailView(task: task)
+                .modifier(DeferAutomaticSync())
         }
         .sheet(item: $selectedBundle) { bundle in
             BundleDetailView(bundle: bundle)
+                .modifier(DeferAutomaticSync())
         }
         .sheet(isPresented: $showingNewTask) {
             NewTaskViewForStatus(plan: plan, statusName: statusName)
+                .modifier(DeferAutomaticSync())
         }
     }
     
@@ -1524,6 +1543,7 @@ struct BundleDetailView: View {
         .onAppear { title = bundle.title }
         .sheet(item: $selectedChildTask) { child in
             TaskDetailView(task: child)
+                .modifier(DeferAutomaticSync())
         }
     }
 

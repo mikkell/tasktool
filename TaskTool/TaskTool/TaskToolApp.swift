@@ -10,6 +10,7 @@ import SwiftUI
 @main
 struct TaskToolApp: App {
     @StateObject private var taskStore = TaskStore()
+    @Environment(\.scenePhase) private var scenePhase
 
     var body: some Scene {
         WindowGroup {
@@ -18,6 +19,10 @@ struct TaskToolApp: App {
                 .font(.system(.body, design: .default))
                 .onAppear {
                     taskStore.loadStoredLocation()
+                    taskStore.setAutoSyncActive(scenePhase == .active)
+                }
+                .onChange(of: scenePhase) { _, phase in
+                    taskStore.setAutoSyncActive(phase == .active)
                 }
         }
         .commands {
