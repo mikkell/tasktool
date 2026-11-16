@@ -80,6 +80,22 @@ final class MobileTaskStoreTests: XCTestCase {
         XCTAssertEqual(store.tasks.first?.body, "Offline notes")
     }
 
+    func testMovingTaskReloadsSelectedPlanAndSubtasksWithoutSyncing() async throws {
+        await store.connect(remoteURL: "https://github.com/example/tasks", token: "placeholder")
+        let task = try XCTUnwrap(store.tasks.first)
+        let plan = try XCTUnwrap(store.plans.first { $0.name == "Second" })
+        var draft = MobileTaskBody(task.body)
+        draft.newSubtaskTitle = "Phone subtask"
+        let saved = await store.save(task, planID: plan.id, status: "To Do", body: draft.markdown)
+        XCTAssertTrue(saved)
+        let moved = try XCTUnwrap(store.tasks.first { $0.id == task.id })
+        XCTAssertEqual(moved.plan, "Second")
+        XCTAssertEqual(moved.status, "To Do")
+        XCTAssertEqual(moved.body, "- [ ] Phone subtask")
+        let syncs = await service.syncs
+        XCTAssertEqual(syncs, 0)
+    }
+
     func testSyncDisablesSaveAndSecondSyncUntilFinished() async throws {
         await store.connect(remoteURL: "https://github.com/example/tasks", token: "placeholder")
         let task = try XCTUnwrap(store.tasks.first)
@@ -236,9 +252,14 @@ private actor MobileServiceStub: MobileGitService {
     func recover() { syncFails = false }
     func updateToken(_ token: String) {}
     func mobileSnapshot() -> RepositorySyncSnapshot { snapshot }
-    func saveMobileTask(_ expected: Task, status: String, body: String) throws {
+    func saveMobileTask(_ expected: Task, planID: UUID?, status: String, body: String) throws {
         guard let index = snapshot.tasks.firstIndex(where: { $0.task == expected }) else {
             throw GitSyncFailure(message: "Draft is stale")
+        }
+        if let planID {
+            guard let plan = snapshot.plans.first(where: { $0.id == planID }) else { throw GitSyncError.missingPlan }
+            snapshot.tasks[index].task.plan = plan.name
+            snapshot.tasks[index].path = "\(plan.name)/\(expected.fileName)"
         }
         snapshot.tasks[index].task.status = status
         snapshot.tasks[index].task.body = body

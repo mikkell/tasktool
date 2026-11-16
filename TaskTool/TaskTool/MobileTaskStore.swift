@@ -18,6 +18,84 @@ public struct MobileTask: Identifiable, Equatable {
     public var isBundled: Bool { value.isBundle || value.parentBundleID != nil }
 }
 
+public struct MobileTaskBody {
+    public struct Subtask: Identifiable, Equatable {
+        public let id = UUID()
+        public var title: String
+        public var isCompleted: Bool
+    }
+
+    public var subtasks: [Subtask]
+    public var notes: String
+    public var newSubtaskTitle = ""
+    private let originalBody: String
+    private let originalSubtasks: [Subtask]
+    private let originalNotes: String
+
+    public init(_ body: String = "") {
+        var subtasks: [Subtask] = []
+        var noteLines: [String] = []
+        var fence: (marker: Character, length: Int)?
+        for line in body.replacingOccurrences(of: "\r\n", with: "\n").components(separatedBy: "\n") {
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            if let current = fence {
+                let run = trimmed.prefix { $0 == current.marker }
+                if run.count >= current.length && trimmed.dropFirst(run.count).trimmingCharacters(in: .whitespaces).isEmpty {
+                    fence = nil
+                }
+                noteLines.append(line)
+                continue
+            }
+            if let marker = trimmed.first, marker == "`" || marker == "~" {
+                let length = trimmed.prefix { $0 == marker }.count
+                if length >= 3 {
+                    fence = (marker, length)
+                    noteLines.append(line)
+                    continue
+                }
+            }
+            if (line.hasPrefix("- [ ] ") || line.hasPrefix("- [x] ")),
+               !line.dropFirst(6).trimmingCharacters(in: .whitespaces).isEmpty {
+                subtasks.append(Subtask(title: String(line.dropFirst(6)), isCompleted: line.hasPrefix("- [x] ")))
+            } else {
+                noteLines.append(line)
+            }
+        }
+        let notes = noteLines.joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
+        self.subtasks = subtasks
+        self.notes = notes
+        originalBody = body
+        originalSubtasks = subtasks
+        originalNotes = notes
+    }
+
+    public var canAddSubtask: Bool { Self.validTitle(newSubtaskTitle) }
+
+    public var isValid: Bool {
+        subtasks.allSatisfy { Self.validTitle($0.title) } &&
+            (newSubtaskTitle.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || canAddSubtask)
+    }
+
+    public mutating func addSubtask() {
+        guard canAddSubtask else { return }
+        subtasks.append(Subtask(title: newSubtaskTitle.trimmingCharacters(in: .whitespacesAndNewlines), isCompleted: false))
+        newSubtaskTitle = ""
+    }
+
+    public var markdown: String {
+        var draft = self
+        draft.addSubtask()
+        // Opening an editor or changing only the plan/status must not reformat notes.
+        if draft.subtasks == originalSubtasks && notes == originalNotes { return originalBody }
+        let lines = draft.subtasks.map { "- [\($0.isCompleted ? "x" : " ")] \($0.title)" }
+        return [lines.joined(separator: "\n"), notes].filter { !$0.isEmpty }.joined(separator: "\n\n")
+    }
+
+    private static func validTitle(_ title: String) -> Bool {
+        !title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && title.rangeOfCharacter(from: .newlines) == nil
+    }
+}
+
 protocol MobileGitService: Actor {
     func clone(remoteURL: String, to directory: URL, token: String) async throws
     func open(remoteURL: String, at directory: URL) async throws
@@ -25,7 +103,7 @@ protocol MobileGitService: Actor {
     func recover() async throws
     func updateToken(_ token: String) async throws
     func mobileSnapshot() async throws -> RepositorySyncSnapshot
-    func saveMobileTask(_ expected: Task, status: String, body: String) async throws
+    func saveMobileTask(_ expected: Task, planID: UUID?, status: String, body: String) async throws
     func createMobileTask(title: String, planID: UUID, status: String?, dueDate: Date?, body: String) async throws
 }
 
@@ -144,12 +222,12 @@ public final class MobileTaskStore: ObservableObject {
     }
 
     @discardableResult
-    public func save(_ task: MobileTask, status: String, body: String) async -> Bool {
+    public func save(_ task: MobileTask, planID: UUID? = nil, status: String, body: String) async -> Bool {
         guard canEdit else { return false }
         begin("Saving locally...", clearConflicts: false)
         defer { isBusy = false }
         do {
-            try await client.saveMobileTask(task.value, status: status, body: body)
+            try await client.saveMobileTask(task.value, planID: planID, status: status, body: body)
             try await reload()
             didSaveLocally()
             return true

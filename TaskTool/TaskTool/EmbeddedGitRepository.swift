@@ -98,9 +98,18 @@ actor EmbeddedGitRepository {
             body: body, order: lastOrder + 1
         )
         var current = try workingFiles(tracked: files())
-        let occupied = Set(current.keys.map { $0.precomposedStringWithCanonicalMapping.lowercased() })
+        let path = try availableMobileTaskPath(for: task, files: current)
+        let data = Data(MarkdownParser.serializeTask(task).utf8)
+        current[path] = GitSyncFile(data: data)
+        _ = try GitSyncFiles.reconcile(base: current, local: current, remote: current)
+        // Exclusive creation protects existing files without cloud-hostile atomic replacement.
+        try data.write(to: safeURL(path), options: .withoutOverwriting)
+    }
+
+    private func availableMobileTaskPath(for task: Task, files: [String: GitSyncFile]) throws -> String {
+        let occupied = Set(files.keys.map { $0.precomposedStringWithCanonicalMapping.lowercased() })
         let slug = String(task.fileName.dropLast(3))
-        var path = "\(plan.name)/\(task.fileName)"
+        var path = "\(task.plan)/\(task.fileName)"
         var suffix = 0
         while true {
             let key = path.precomposedStringWithCanonicalMapping.lowercased()
@@ -109,43 +118,75 @@ actor EmbeddedGitRepository {
                !manager.fileExists(atPath: destination.path) { break }
             suffix += 1
             let unique = task.id.uuidString.lowercased().prefix(8)
-            path = "\(plan.name)/\(slug)-\(unique)\(suffix == 1 ? "" : "-\(suffix)").md"
+            path = "\(task.plan)/\(slug)-\(unique)\(suffix == 1 ? "" : "-\(suffix)").md"
         }
         var ignored: Int32 = 0
         try Self.check(git_ignore_path_is_ignored(&ignored, pointer, path), "check ignored path")
         guard ignored == 0 else { throw GitSyncError.unsupportedFile(path) }
-        let data = Data(MarkdownParser.serializeTask(task).utf8)
-        current[path] = GitSyncFile(data: data)
-        _ = try GitSyncFiles.reconcile(base: current, local: current, remote: current)
-        // Exclusive creation protects existing files without cloud-hostile atomic replacement.
-        try data.write(to: safeURL(path), options: .withoutOverwriting)
+        return path
     }
 
-    func saveMobileTask(_ expected: Task, status: String, body: String) throws {
+    func saveMobileTask(_ expected: Task, planID: UUID? = nil, status: String, body: String) throws {
         let snapshot = try mobileSnapshot()
         guard let entry = snapshot.tasks.first(where: { $0.task.id == expected.id }),
               entry.path.split(separator: "/").count == 2,
               entry.task == expected else { throw GitSyncError.dirtyWorkingCopy }
-        guard let plan = snapshot.plans.first(where: { $0.name == expected.plan }),
-              let newStatus = plan.statuses.first(where: { $0.name == status }),
-              status == expected.status || (!expected.isBundle && expected.parentBundleID == nil) else {
+        guard let oldPlan = snapshot.plans.first(where: { $0.name == expected.plan }),
+              let plan = snapshot.plans.first(where: { planID == nil ? $0.id == oldPlan.id : $0.id == planID }) else {
+            throw GitSyncError.missingPlan
+        }
+        let moving = plan.id != oldPlan.id
+        guard let newStatus = plan.statuses.first(where: { $0.name == status }),
+              (!moving && status == expected.status) || (!expected.isBundle && expected.parentBundleID == nil) else {
             throw GitSyncError.invalidMetadata(entry.path)
         }
-        guard status != expected.status || body != expected.body else { return }
+        guard moving || status != expected.status || body != expected.body else { return }
         var updated = expected
+        updated.plan = plan.name
         updated.status = status
         updated.body = body
         updated.updated = Date()
-        if newStatus.isDoneStatus && plan.statuses.first(where: { $0.name == expected.status })?.isDoneStatus != true {
+        if moving {
+            let lastOrder = snapshot.tasks.filter {
+                $0.path.split(separator: "/").count == 2 && $0.task.plan == plan.name &&
+                    $0.task.status == status && $0.task.parentBundleID == nil
+            }.map(\.task.order).max() ?? -1
+            guard lastOrder < Int.max else { throw GitSyncError.invalidMetadata("\(plan.name)/plan.yaml") }
+            updated.order = lastOrder + 1
+        }
+        if newStatus.isDoneStatus && oldPlan.statuses.first(where: { $0.name == expected.status })?.isDoneStatus != true {
             updated.completedAt = updated.updated
         }
-        let destination = try safeURL(entry.path)
-        guard let actual = try file(at: destination),
+        let source = try safeURL(entry.path)
+        guard let actual = try file(at: source),
               let text = String(data: actual.data, encoding: .utf8),
               try MarkdownParser.parseTask(from: text, plan: expected.plan) == expected else {
             throw GitSyncError.dirtyWorkingCopy
         }
-        try MarkdownParser.serializeTask(updated).write(to: destination, atomically: false, encoding: .utf8)
+        var current = try workingFiles(tracked: files())
+        let path = moving ? try availableMobileTaskPath(for: updated, files: current) : entry.path
+        let data = Data(MarkdownParser.serializeTask(updated).utf8)
+        current.removeValue(forKey: entry.path)
+        current[path] = GitSyncFile(data: data, mode: actual.mode)
+        _ = try GitSyncFiles.reconcile(base: current, local: current, remote: current)
+        guard try file(at: source) == actual else { throw GitSyncError.dirtyWorkingCopy }
+        if moving {
+            let destination = try safeURL(path)
+            try data.write(to: destination, options: .withoutOverwriting)
+            do {
+                guard try file(at: source) == actual,
+                      try file(at: destination)?.data == data else { throw GitSyncError.dirtyWorkingCopy }
+                try manager.removeItem(at: source)
+            } catch {
+                // Roll back our new file only while the original is still intact.
+                if (try? file(at: source)) == actual, (try? file(at: destination))?.data == data {
+                    try? manager.removeItem(at: destination)
+                }
+                throw error
+            }
+        } else {
+            try String(decoding: data, as: UTF8.self).write(to: source, atomically: false, encoding: .utf8)
+        }
     }
 
     static func clone(from remote: GitHubRemote, to directory: URL, credentials: GitHubTokenStore) throws -> EmbeddedGitRepository {

@@ -108,7 +108,7 @@ private struct PhonePlanView: View {
                             }
                             ForEach(tasks) { task in
                                 NavigationLink {
-                                    PhoneTaskEditor(task: task, statuses: plan.statuses)
+                                    PhoneTaskEditor(task: task, plan: plan)
                                 } label: {
                                     VStack(alignment: .leading, spacing: 4) {
                                         Text(task.title)
@@ -147,35 +147,45 @@ private struct PhoneTaskEditor: View {
     @EnvironmentObject private var store: MobileTaskStore
     @Environment(\.dismiss) private var dismiss
     let task: MobileTask
-    let statuses: [String]
+    let originalPlanID: UUID
+    @State private var planID: UUID
     @State private var status: String
-    @State private var bodyText: String
+    @State private var draft: MobileTaskBody
     @State private var showingError = false
     @State private var editorID = UUID()
 
-    init(task: MobileTask, statuses: [String]) {
+    init(task: MobileTask, plan: MobilePlan) {
         self.task = task
-        self.statuses = statuses
+        originalPlanID = plan.id
+        _planID = State(initialValue: plan.id)
         _status = State(initialValue: task.status)
-        _bodyText = State(initialValue: task.body)
+        _draft = State(initialValue: MobileTaskBody(task.body))
+    }
+
+    private var selectedPlan: MobilePlan? {
+        store.plans.first { $0.id == planID }
     }
 
     var body: some View {
         Form {
             Section {
                 Text(task.title).font(.headline)
+                Picker("Plan", selection: $planID) {
+                    ForEach(store.plans) { plan in
+                        Text(plan.name).tag(plan.id)
+                    }
+                }
+                .disabled(task.isBundled)
                 Picker("Status", selection: $status) {
-                    ForEach(statuses, id: \.self) { Text($0).tag($0) }
+                    ForEach(selectedPlan?.statuses ?? [], id: \.self) { Text($0).tag($0) }
                 }
                 .disabled(task.isBundled)
                 if task.isBundled {
-                    Text("Change bundle statuses on your Mac. Notes can be edited here.")
+                    Text("Move bundled tasks and change their statuses on your Mac. Notes and sub-tasks can be edited here.")
                         .font(.caption).foregroundStyle(.secondary)
                 }
             }
-            Section("Notes (Markdown)") {
-                PhoneMarkdownNotesEditor(text: $bodyText, minimumHeight: 240, accessibilityLabel: "Task notes")
-            }
+            PhoneTaskBodyEditor(draft: $draft, notesMinimumHeight: 240, notesAccessibilityLabel: "Task notes")
             Section {
                 Text("Save writes to this iPhone immediately, even offline. Automatic sync shares saved changes after a short delay while the app is active.")
                     .font(.caption).foregroundStyle(.secondary)
@@ -186,7 +196,12 @@ private struct PhoneTaskEditor: View {
         .onDisappear { store.setAutoSyncEditor(editorID, isOpen: false) }
         .navigationTitle("Edit Task")
         .navigationBarTitleDisplayMode(.inline)
-        .navigationBarBackButtonHidden(status != task.status || bodyText != task.body)
+        .navigationBarBackButtonHidden(planID != originalPlanID || status != task.status || draft.markdown != task.body)
+        .onChange(of: planID) { _, _ in
+            if selectedPlan?.statuses.contains(status) != true {
+                status = selectedPlan?.statuses.first ?? ""
+            }
+        }
         .toolbar {
             ToolbarItem(placement: .cancellationAction) {
                 Button("Cancel") { dismiss() }
@@ -194,14 +209,14 @@ private struct PhoneTaskEditor: View {
             ToolbarItem(placement: .confirmationAction) {
                 Button("Save") {
                     _Concurrency.Task {
-                        if await store.save(task, status: status, body: bodyText) {
+                        if await store.save(task, planID: planID, status: status, body: draft.markdown) {
                             dismiss()
                         } else {
                             showingError = true
                         }
                     }
                 }
-                .disabled(!store.canEdit)
+                .disabled(!store.canEdit || !draft.isValid || selectedPlan?.statuses.contains(status) != true)
             }
         }
         .alert("Could Not Save", isPresented: $showingError) {
