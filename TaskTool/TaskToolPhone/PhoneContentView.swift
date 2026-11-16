@@ -186,10 +186,6 @@ private struct PhoneTaskEditor: View {
                 }
             }
             PhoneTaskBodyEditor(draft: $draft, notesMinimumHeight: 240, notesAccessibilityLabel: "Task notes")
-            Section {
-                Text("Save writes to this iPhone immediately, even offline. Automatic sync shares saved changes after a short delay while the app is active.")
-                    .font(.caption).foregroundStyle(.secondary)
-            }
         }
         .disabled(!store.canEdit)
         .onAppear { store.setAutoSyncEditor(editorID, isOpen: true) }
