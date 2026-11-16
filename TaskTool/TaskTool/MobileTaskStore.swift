@@ -103,7 +103,7 @@ protocol MobileGitService: Actor {
     func recover() async throws
     func updateToken(_ token: String) async throws
     func mobileSnapshot() async throws -> RepositorySyncSnapshot
-    func saveMobileTask(_ expected: Task, planID: UUID?, status: String, body: String) async throws
+    func saveMobileTask(_ expected: Task, planID: UUID?, status: String, dueDate: Date?, body: String) async throws
     func createMobileTask(title: String, planID: UUID, status: String?, dueDate: Date?, body: String) async throws
 }
 
@@ -222,12 +222,12 @@ public final class MobileTaskStore: ObservableObject {
     }
 
     @discardableResult
-    public func save(_ task: MobileTask, planID: UUID? = nil, status: String, body: String) async -> Bool {
+    public func save(_ task: MobileTask, planID: UUID? = nil, status: String, dueDate: Date?, body: String) async -> Bool {
         guard canEdit else { return false }
         begin("Saving locally...", clearConflicts: false)
         defer { isBusy = false }
         do {
-            try await client.saveMobileTask(task.value, planID: planID, status: status, body: body)
+            try await client.saveMobileTask(task.value, planID: planID, status: status, dueDate: dueDate, body: body)
             try await reload()
             didSaveLocally()
             return true

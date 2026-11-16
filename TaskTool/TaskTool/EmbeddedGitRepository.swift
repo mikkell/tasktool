@@ -126,7 +126,7 @@ actor EmbeddedGitRepository {
         return path
     }
 
-    func saveMobileTask(_ expected: Task, planID: UUID? = nil, status: String, body: String) throws {
+    func saveMobileTask(_ expected: Task, planID: UUID? = nil, status: String, dueDate: Date?, body: String) throws {
         let snapshot = try mobileSnapshot()
         guard let entry = snapshot.tasks.first(where: { $0.task.id == expected.id }),
               entry.path.split(separator: "/").count == 2,
@@ -140,10 +140,11 @@ actor EmbeddedGitRepository {
               (!moving && status == expected.status) || (!expected.isBundle && expected.parentBundleID == nil) else {
             throw GitSyncError.invalidMetadata(entry.path)
         }
-        guard moving || status != expected.status || body != expected.body else { return }
+        guard moving || status != expected.status || dueDate != expected.dueDate || body != expected.body else { return }
         var updated = expected
         updated.plan = plan.name
         updated.status = status
+        updated.dueDate = dueDate
         updated.body = body
         updated.updated = Date()
         if moving {

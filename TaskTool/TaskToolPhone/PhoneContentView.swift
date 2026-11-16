@@ -150,6 +150,8 @@ private struct PhoneTaskEditor: View {
     let originalPlanID: UUID
     @State private var planID: UUID
     @State private var status: String
+    @State private var hasDueDate: Bool
+    @State private var dueDate: Date
     @State private var draft: MobileTaskBody
     @State private var showingError = false
     @State private var editorID = UUID()
@@ -159,11 +161,17 @@ private struct PhoneTaskEditor: View {
         originalPlanID = plan.id
         _planID = State(initialValue: plan.id)
         _status = State(initialValue: task.status)
+        _hasDueDate = State(initialValue: task.dueDate != nil)
+        _dueDate = State(initialValue: task.dueDate ?? Date())
         _draft = State(initialValue: MobileTaskBody(task.body))
     }
 
     private var selectedPlan: MobilePlan? {
         store.plans.first { $0.id == planID }
+    }
+
+    private var selectedDueDate: Date? {
+        hasDueDate ? dueDate : nil
     }
 
     var body: some View {
@@ -185,6 +193,12 @@ private struct PhoneTaskEditor: View {
                         .font(.caption).foregroundStyle(.secondary)
                 }
             }
+            Section("Due Date") {
+                Toggle("Set due date", isOn: $hasDueDate)
+                if hasDueDate {
+                    DatePicker("Due", selection: $dueDate, displayedComponents: .date)
+                }
+            }
             PhoneTaskBodyEditor(draft: $draft, notesMinimumHeight: 240, notesAccessibilityLabel: "Task notes")
         }
         .disabled(!store.canEdit)
@@ -192,7 +206,10 @@ private struct PhoneTaskEditor: View {
         .onDisappear { store.setAutoSyncEditor(editorID, isOpen: false) }
         .navigationTitle("Edit Task")
         .navigationBarTitleDisplayMode(.inline)
-        .navigationBarBackButtonHidden(planID != originalPlanID || status != task.status || draft.markdown != task.body)
+        .navigationBarBackButtonHidden(
+            planID != originalPlanID || status != task.status ||
+                selectedDueDate != task.dueDate || draft.markdown != task.body
+        )
         .onChange(of: planID) { _, _ in
             if selectedPlan?.statuses.contains(status) != true {
                 status = selectedPlan?.statuses.first ?? ""
@@ -205,7 +222,9 @@ private struct PhoneTaskEditor: View {
             ToolbarItem(placement: .confirmationAction) {
                 Button("Save") {
                     _Concurrency.Task {
-                        if await store.save(task, planID: planID, status: status, body: draft.markdown) {
+                        if await store.save(
+                            task, planID: planID, status: status, dueDate: selectedDueDate, body: draft.markdown
+                        ) {
                             dismiss()
                         } else {
                             showingError = true

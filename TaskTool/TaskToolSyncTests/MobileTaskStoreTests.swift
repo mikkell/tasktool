@@ -47,7 +47,7 @@ final class MobileTaskStoreTests: XCTestCase {
         await restored.reopen()
         XCTAssertTrue(restored.storageUnavailable)
         XCTAssertFalse(restored.canEdit)
-        let saved = await restored.save(try XCTUnwrap(restored.tasks.first), status: "Finished", body: "Blocked")
+        let saved = await restored.save(try XCTUnwrap(restored.tasks.first), status: "Finished", dueDate: nil, body: "Blocked")
         XCTAssertFalse(saved)
     }
 
@@ -70,14 +70,36 @@ final class MobileTaskStoreTests: XCTestCase {
     func testSaveDoesNotSyncAndKeepsDraftOnFailure() async throws {
         await store.connect(remoteURL: "https://github.com/example/tasks", token: "placeholder")
         let task = try XCTUnwrap(store.tasks.first)
-        let success = await store.save(task, status: "Finished", body: "Offline notes")
+        let success = await store.save(task, status: "Finished", dueDate: task.dueDate, body: "Offline notes")
         XCTAssertTrue(success)
         XCTAssertEqual(store.tasks.first?.body, "Offline notes")
         let syncs = await service.syncs
         XCTAssertEqual(syncs, 0)
-        let staleSave = await store.save(task, status: "Queued", body: "Stale draft")
+        let staleSave = await store.save(task, status: "Queued", dueDate: task.dueDate, body: "Stale draft")
         XCTAssertFalse(staleSave)
         XCTAssertEqual(store.tasks.first?.body, "Offline notes")
+    }
+
+    func testDueDateOnlySavesReloadAndClearingRejectsStaleDrafts() async throws {
+        await store.connect(remoteURL: "https://github.com/example/tasks", token: "placeholder")
+        let original = try XCTUnwrap(store.tasks.first)
+        let dueDate = Date(timeIntervalSince1970: 1_800_000_000)
+        let saved = await store.save(original, status: original.status, dueDate: dueDate, body: original.body)
+        XCTAssertTrue(saved)
+        let dated = try XCTUnwrap(store.tasks.first)
+        XCTAssertEqual(dated.dueDate, dueDate)
+        let staleSave = await store.save(original, status: original.status, dueDate: nil, body: original.body)
+        XCTAssertFalse(staleSave)
+        XCTAssertEqual(store.tasks.first?.dueDate, dueDate)
+        let cleared = await store.save(dated, status: dated.status, dueDate: nil, body: dated.body)
+        XCTAssertTrue(cleared)
+        let result = try XCTUnwrap(store.tasks.first)
+        XCTAssertNil(result.dueDate)
+        XCTAssertEqual(result.id, original.id)
+        XCTAssertEqual(result.status, original.status)
+        XCTAssertEqual(result.body, original.body)
+        let syncs = await service.syncs
+        XCTAssertEqual(syncs, 0)
     }
 
     func testMovingTaskReloadsSelectedPlanAndSubtasksWithoutSyncing() async throws {
@@ -86,7 +108,7 @@ final class MobileTaskStoreTests: XCTestCase {
         let plan = try XCTUnwrap(store.plans.first { $0.name == "Second" })
         var draft = MobileTaskBody(task.body)
         draft.newSubtaskTitle = "Phone subtask"
-        let saved = await store.save(task, planID: plan.id, status: "To Do", body: draft.markdown)
+        let saved = await store.save(task, planID: plan.id, status: "To Do", dueDate: task.dueDate, body: draft.markdown)
         XCTAssertTrue(saved)
         let moved = try XCTUnwrap(store.tasks.first { $0.id == task.id })
         XCTAssertEqual(moved.plan, "Second")
@@ -103,7 +125,7 @@ final class MobileTaskStoreTests: XCTestCase {
         let syncing = _Concurrency.Task { await store.sync() }
         await service.waitForSync()
         XCTAssertFalse(store.canEdit)
-        let saved = await store.save(task, status: "Finished", body: "Blocked")
+        let saved = await store.save(task, status: "Finished", dueDate: task.dueDate, body: "Blocked")
         XCTAssertFalse(saved)
         let plan = try XCTUnwrap(store.plans.first)
         let created = await store.createTask(title: "Blocked", planID: plan.id)
@@ -125,7 +147,7 @@ final class MobileTaskStoreTests: XCTestCase {
         let editorID = UUID()
         store.setAutoSyncEditor(editorID, isOpen: true)
         store.setAutoSyncActive(true)
-        let saved = await store.save(task, status: "Finished", body: "Offline draft")
+        let saved = await store.save(task, status: "Finished", dueDate: task.dueDate, body: "Offline draft")
         XCTAssertTrue(saved)
         try await _Concurrency.Task.sleep(nanoseconds: 6_000_000_000)
         let whileEditing = await service.syncs
@@ -148,7 +170,7 @@ final class MobileTaskStoreTests: XCTestCase {
         await store.sync()
         XCTAssertFalse(store.conflicts.isEmpty)
         let task = try XCTUnwrap(store.tasks.first)
-        let saved = await store.save(task, status: task.status, body: "Retained offline")
+        let saved = await store.save(task, status: task.status, dueDate: task.dueDate, body: "Retained offline")
         XCTAssertTrue(saved)
         XCTAssertFalse(store.conflicts.isEmpty)
         XCTAssertTrue(store.message.contains("paused"))
@@ -252,7 +274,7 @@ private actor MobileServiceStub: MobileGitService {
     func recover() { syncFails = false }
     func updateToken(_ token: String) {}
     func mobileSnapshot() -> RepositorySyncSnapshot { snapshot }
-    func saveMobileTask(_ expected: Task, planID: UUID?, status: String, body: String) throws {
+    func saveMobileTask(_ expected: Task, planID: UUID?, status: String, dueDate: Date?, body: String) throws {
         guard let index = snapshot.tasks.firstIndex(where: { $0.task == expected }) else {
             throw GitSyncFailure(message: "Draft is stale")
         }
@@ -262,6 +284,7 @@ private actor MobileServiceStub: MobileGitService {
             snapshot.tasks[index].path = "\(plan.name)/\(expected.fileName)"
         }
         snapshot.tasks[index].task.status = status
+        snapshot.tasks[index].task.dueDate = dueDate
         snapshot.tasks[index].task.body = body
     }
     func createMobileTask(title: String, planID: UUID, status: String?, dueDate: Date?, body: String) throws {

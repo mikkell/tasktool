@@ -93,7 +93,7 @@ final class EmbeddedGitRepositoryTests: XCTestCase {
         let before = try await mac.mobileSnapshot()
         let task = try XCTUnwrap(before.tasks.first?.task)
         let head = try await mac.head()
-        try await mac.saveMobileTask(task, status: "Done", body: "Offline notes")
+        try await mac.saveMobileTask(task, status: "Done", dueDate: task.dueDate, body: "Offline notes")
         let after = try await mac.mobileSnapshot()
         let updated = try XCTUnwrap(after.tasks.first?.task)
         XCTAssertEqual(updated.status, "Done")
@@ -107,15 +107,56 @@ final class EmbeddedGitRepositoryTests: XCTestCase {
         let afterHead = try await mac.head()
         XCTAssertEqual(afterHead, head)
         do {
-            try await mac.saveMobileTask(task, status: "To Do", body: "Stale notes")
+            try await mac.saveMobileTask(task, status: "To Do", dueDate: task.dueDate, body: "Stale notes")
             XCTFail("Expected stale draft rejection")
         } catch GitSyncError.dirtyWorkingCopy {}
         do {
-            try await mac.saveMobileTask(updated, status: "Invalid status", body: "Notes")
+            try await mac.saveMobileTask(updated, status: "Invalid status", dueDate: updated.dueDate, body: "Notes")
             XCTFail("Expected unknown status rejection")
         } catch GitSyncError.invalidMetadata {}
         let onDisk = try await mac.mobileSnapshot()
         XCTAssertEqual(onDisk.tasks.first?.task, updated)
+    }
+
+    func testMobileDueDateOnlyEditsCanBeSetChangedClearedAndSynced() async throws {
+        let (mac, phone, _) = try await seed()
+        let initial = try await mac.mobileSnapshot()
+        let original = try XCTUnwrap(initial.tasks.first?.task)
+        let head = try await mac.head()
+        let firstDate = Date(timeIntervalSince1970: 1_800_000_000)
+        try await mac.saveMobileTask(original, status: original.status, dueDate: firstDate, body: original.body)
+        let firstSnapshot = try await mac.mobileSnapshot()
+        let dated = try XCTUnwrap(firstSnapshot.tasks.first?.task)
+        XCTAssertEqual(dated.dueDate, firstDate)
+        let revisedDate = firstDate.addingTimeInterval(86_400)
+        try await mac.saveMobileTask(dated, status: dated.status, dueDate: revisedDate, body: dated.body)
+        let revisedSnapshot = try await mac.mobileSnapshot()
+        let revised = try XCTUnwrap(revisedSnapshot.tasks.first?.task)
+        XCTAssertEqual(revised.dueDate, revisedDate)
+        XCTAssertEqual(revised.id, original.id)
+        XCTAssertEqual(revised.status, original.status)
+        XCTAssertEqual(revised.body, original.body)
+        XCTAssertEqual(revised.created, original.created)
+        let afterHead = try await mac.head()
+        XCTAssertEqual(afterHead, head, "Due-date edits must be saved offline without committing or pushing.")
+        do {
+            try await mac.saveMobileTask(original, status: original.status, dueDate: nil, body: original.body)
+            XCTFail("Expected stale due-date draft rejection")
+        } catch GitSyncError.dirtyWorkingCopy {}
+        try await mac.commitWorkingCopy(message: "Change task due date")
+        try await mac.synchronize()
+        try await phone.synchronize()
+        let onPhone = try await phone.mobileSnapshot()
+        let received = try XCTUnwrap(onPhone.tasks.first?.task)
+        XCTAssertEqual(received.dueDate, revisedDate)
+        try await phone.saveMobileTask(received, status: received.status, dueDate: nil, body: received.body)
+        let cleared = try await phone.mobileSnapshot()
+        XCTAssertNil(try XCTUnwrap(cleared.tasks.first?.task).dueDate)
+        try await phone.commitWorkingCopy(message: "Clear task due date")
+        try await phone.synchronize()
+        try await mac.synchronize()
+        let onMac = try await mac.mobileSnapshot()
+        XCTAssertNil(try XCTUnwrap(onMac.tasks.first?.task).dueDate)
     }
 
     func testMobileCreationRoutesToSelectedPlanAndSyncsCustomStatusesAndDueDate() async throws {
@@ -180,7 +221,7 @@ final class EmbeddedGitRepositoryTests: XCTestCase {
         let head = try await mac.head()
         var draft = MobileTaskBody(original.body)
         draft.subtasks[0].isCompleted = true
-        try await mac.saveMobileTask(original, planID: plan.id, status: "Done", body: draft.markdown)
+        try await mac.saveMobileTask(original, planID: plan.id, status: "Done", dueDate: original.dueDate, body: draft.markdown)
         let after = try await mac.mobileSnapshot()
         let moved = try XCTUnwrap(after.tasks.first { $0.task.id == original.id })
         XCTAssertEqual(moved.path, "Personal/example-\(original.id.uuidString.lowercased().prefix(8)).md")
@@ -211,11 +252,11 @@ final class EmbeddedGitRepositoryTests: XCTestCase {
         let before = try await mac.mobileSnapshot()
         let task = try XCTUnwrap(before.tasks.first?.task)
         do {
-            try await mac.saveMobileTask(task, planID: UUID(), status: "Queued", body: task.body)
+            try await mac.saveMobileTask(task, planID: UUID(), status: "Queued", dueDate: task.dueDate, body: task.body)
             XCTFail("Expected missing plan rejection")
         } catch GitSyncError.missingPlan {}
         do {
-            try await mac.saveMobileTask(task, planID: plan.id, status: "To Do", body: task.body)
+            try await mac.saveMobileTask(task, planID: plan.id, status: "To Do", dueDate: task.dueDate, body: task.body)
             XCTFail("Expected destination status validation")
         } catch GitSyncError.invalidMetadata {}
         let after = try await mac.mobileSnapshot()
@@ -225,7 +266,7 @@ final class EmbeddedGitRepositoryTests: XCTestCase {
         let changedBytes = Data(MarkdownParser.serializeTask(changed).utf8)
         try write(changedBytes, path: "Work/example.md", at: macURL)
         do {
-            try await mac.saveMobileTask(task, planID: plan.id, status: "Queued", body: "Stale edit")
+            try await mac.saveMobileTask(task, planID: plan.id, status: "Queued", dueDate: task.dueDate, body: "Stale edit")
             XCTFail("Expected stale draft rejection")
         } catch GitSyncError.dirtyWorkingCopy {}
         XCTAssertEqual(try Data(contentsOf: macURL.appendingPathComponent("Work/example.md")), changedBytes)
@@ -241,10 +282,10 @@ final class EmbeddedGitRepositoryTests: XCTestCase {
         let task = try XCTUnwrap(before.tasks.first?.task)
         let workPlan = try XCTUnwrap(before.plans.first { $0.name == "Work" })
         let originalBytes = try Data(contentsOf: macURL.appendingPathComponent("Work/example.md"))
-        try await mac.saveMobileTask(task, planID: workPlan.id, status: task.status, body: task.body)
+        try await mac.saveMobileTask(task, planID: workPlan.id, status: task.status, dueDate: task.dueDate, body: task.body)
         XCTAssertEqual(try Data(contentsOf: macURL.appendingPathComponent("Work/example.md")), originalBytes)
         do {
-            try await mac.saveMobileTask(task, planID: plan.id, status: task.status, body: task.body)
+            try await mac.saveMobileTask(task, planID: plan.id, status: task.status, dueDate: task.dueDate, body: task.body)
             XCTFail("Expected ignored destination rejection")
         } catch GitSyncError.unsupportedFile("Personal/example.md") {}
         XCTAssertEqual(try Data(contentsOf: macURL.appendingPathComponent("Work/example.md")), originalBytes)
@@ -323,17 +364,17 @@ final class EmbeddedGitRepositoryTests: XCTestCase {
         let snapshot = try await mac.mobileSnapshot()
         let loaded = try XCTUnwrap(snapshot.tasks.first(where: { $0.task.id == child.id })?.task)
         do {
-            try await mac.saveMobileTask(loaded, status: "Done", body: loaded.body)
+            try await mac.saveMobileTask(loaded, status: "Done", dueDate: loaded.dueDate, body: loaded.body)
             XCTFail("Expected bundle status change rejection")
         } catch GitSyncError.invalidMetadata {}
         for id in [child.id, bundle.id] {
             let bundled = try XCTUnwrap(snapshot.tasks.first { $0.task.id == id }?.task)
             do {
-                try await mac.saveMobileTask(bundled, planID: otherPlan.id, status: bundled.status, body: bundled.body)
+                try await mac.saveMobileTask(bundled, planID: otherPlan.id, status: bundled.status, dueDate: bundled.dueDate, body: bundled.body)
                 XCTFail("Expected bundle plan change rejection")
             } catch GitSyncError.invalidMetadata {}
         }
-        try await mac.saveMobileTask(loaded, status: loaded.status, body: "Child notes")
+        try await mac.saveMobileTask(loaded, status: loaded.status, dueDate: loaded.dueDate, body: "Child notes")
         let after = try await mac.mobileSnapshot()
         XCTAssertEqual(after.tasks.first(where: { $0.task.id == child.id })?.task.body, "Child notes")
         XCTAssertEqual(after.tasks.first(where: { $0.task.id == bundle.id })?.task.bundledTaskIDs, bundle.bundledTaskIDs)

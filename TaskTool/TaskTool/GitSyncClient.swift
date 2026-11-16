@@ -122,10 +122,10 @@ public actor GitSyncClient {
         } catch { throw await failure(error) }
     }
 
-    func saveMobileTask(_ expected: Task, planID: UUID? = nil, status: String, body: String) async throws {
+    func saveMobileTask(_ expected: Task, planID: UUID? = nil, status: String, dueDate: Date?, body: String) async throws {
         do {
             guard let repository else { throw GitSyncError.wrongBranch }
-            try await repository.saveMobileTask(expected, planID: planID, status: status, body: body)
+            try await repository.saveMobileTask(expected, planID: planID, status: status, dueDate: dueDate, body: body)
         } catch { throw await failure(error) }
     }
 
