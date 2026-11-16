@@ -3,8 +3,12 @@ import SwiftUI
 /// Read-only rendering of markdown text: headings, bullet/numbered lists, quotes, code blocks,
 /// rules and inline styling (bold, italic, code, links). Each source line is kept as its own
 /// line, matching how task descriptions are typically written.
-struct MarkdownPreview: View {
+public struct MarkdownPreview: View {
     let text: String
+
+    public init(text: String) {
+        self.text = text
+    }
 
     private enum Block {
         case heading(level: Int, text: String)
@@ -20,7 +24,7 @@ struct MarkdownPreview: View {
     private static let imageRegex = try? NSRegularExpression(pattern: #"!\[[^\]]*\]\([^\)]+\)"#)
     private static let linkDetector = try? NSDataDetector(types: NSTextCheckingResult.CheckingType.link.rawValue)
 
-    var body: some View {
+    public var body: some View {
         let blocks = Self.parse(text)
 
         if blocks.isEmpty {

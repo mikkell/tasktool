@@ -46,13 +46,7 @@ struct PhoneNewTaskView: View {
                     }
                 }
                 Section("Notes (Markdown)") {
-                    TextEditor(text: $notes)
-                        .frame(minHeight: 160)
-                        .accessibilityLabel("New task notes")
-                }
-                Section {
-                    Text("Tasks save on this iPhone, even offline. Automatic sync shares them after you close the editor.")
-                        .font(.caption).foregroundStyle(.secondary)
+                    PhoneMarkdownNotesEditor(text: $notes, minimumHeight: 160, accessibilityLabel: "New task notes")
                 }
             }
             .disabled(!store.canEdit)

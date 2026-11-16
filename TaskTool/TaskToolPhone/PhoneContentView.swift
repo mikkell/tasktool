@@ -174,9 +174,7 @@ private struct PhoneTaskEditor: View {
                 }
             }
             Section("Notes (Markdown)") {
-                TextEditor(text: $bodyText)
-                    .frame(minHeight: 240)
-                    .accessibilityLabel("Task notes")
+                PhoneMarkdownNotesEditor(text: $bodyText, minimumHeight: 240, accessibilityLabel: "Task notes")
             }
             Section {
                 Text("Save writes to this iPhone immediately, even offline. Automatic sync shares saved changes after a short delay while the app is active.")
