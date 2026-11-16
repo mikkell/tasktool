@@ -7,6 +7,7 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		B10000000000000000000001 /* TaskToolCore in Phone Frameworks */ = {isa = PBXBuildFile; productRef = A10000000000000000000002 /* TaskToolCore */; };
 		6CF16D5E2FB3258800875415 /* Yams in Frameworks */ = {isa = PBXBuildFile; productRef = 6C072B5E2F22172400D7A219 /* Yams */; };
 		A10000000000000000000001 /* TaskToolCore in Frameworks */ = {isa = PBXBuildFile; productRef = A10000000000000000000002 /* TaskToolCore */; };
 /* End PBXBuildFile section */
@@ -29,6 +30,7 @@
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXFileReference section */
+		B10000000000000000000002 /* TaskToolPhone.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; path = TaskToolPhone.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		6C072B322F22172000D7A219 /* TaskTool.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = TaskTool.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		6C072B412F22172300D7A219 /* TaskToolTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = TaskToolTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		6C072B4B2F22172300D7A219 /* TaskToolUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = TaskToolUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -42,6 +44,7 @@
 				GitHubCredentials.swift,
 				GitSyncClient.swift,
 				GitSyncFiles.swift,
+				MobileTaskStore.swift,
 				RepositorySyncMerge.swift,
 				TaskSyncMerge.swift,
 			);
@@ -50,6 +53,11 @@
 /* End PBXFileSystemSynchronizedBuildFileExceptionSet section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
+		B10000000000000000000003 /* TaskToolPhone */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			path = TaskToolPhone;
+			sourceTree = "<group>";
+		};
 		6C072B342F22172000D7A219 /* TaskTool */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
 			exceptions = (
@@ -71,6 +79,12 @@
 /* End PBXFileSystemSynchronizedRootGroup section */
 
 /* Begin PBXFrameworksBuildPhase section */
+		B10000000000000000000004 /* Phone Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (B10000000000000000000001 /* TaskToolCore in Phone Frameworks */,);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 		6C072B2F2F22172000D7A219 /* Frameworks */ = {
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
@@ -100,6 +114,7 @@
 		6C072B292F22172000D7A219 = {
 			isa = PBXGroup;
 			children = (
+				B10000000000000000000003 /* TaskToolPhone */,
 				6C072B342F22172000D7A219 /* TaskTool */,
 				6C072B442F22172300D7A219 /* TaskToolTests */,
 				6C072B4E2F22172300D7A219 /* TaskToolUITests */,
@@ -111,6 +126,7 @@
 			isa = PBXGroup;
 			children = (
 				6C072B322F22172000D7A219 /* TaskTool.app */,
+				B10000000000000000000002 /* TaskToolPhone.app */,
 				6C072B412F22172300D7A219 /* TaskToolTests.xctest */,
 				6C072B4B2F22172300D7A219 /* TaskToolUITests.xctest */,
 			);
@@ -120,6 +136,23 @@
 /* End PBXGroup section */
 
 /* Begin PBXNativeTarget section */
+		B10000000000000000000005 /* TaskToolPhone */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = B10000000000000000000008 /* Phone configuration list */;
+			buildPhases = (
+				B10000000000000000000006 /* Phone Sources */,
+				B10000000000000000000004 /* Phone Frameworks */,
+				B10000000000000000000007 /* Phone Resources */,
+			);
+			buildRules = ();
+			dependencies = ();
+			fileSystemSynchronizedGroups = (B10000000000000000000003 /* TaskToolPhone */,);
+			name = TaskToolPhone;
+			packageProductDependencies = (A10000000000000000000002 /* TaskToolCore */,);
+			productName = TaskToolPhone;
+			productReference = B10000000000000000000002 /* TaskToolPhone.app */;
+			productType = "com.apple.product-type.application";
+		};
 		6C072B312F22172000D7A219 /* TaskTool */ = {
 			isa = PBXNativeTarget;
 			buildConfigurationList = 6C072B552F22172300D7A219 /* Build configuration list for PBXNativeTarget "TaskTool" */;
@@ -231,6 +264,7 @@
 			projectDirPath = "";
 			projectRoot = "";
 			targets = (
+				B10000000000000000000005 /* TaskToolPhone */,
 				6C072B312F22172000D7A219 /* TaskTool */,
 				6C072B402F22172300D7A219 /* TaskToolTests */,
 				6C072B4A2F22172300D7A219 /* TaskToolUITests */,
@@ -239,6 +273,12 @@
 /* End PBXProject section */
 
 /* Begin PBXResourcesBuildPhase section */
+		B10000000000000000000007 /* Phone Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = ();
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 		6C072B302F22172000D7A219 /* Resources */ = {
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
@@ -263,6 +303,12 @@
 /* End PBXResourcesBuildPhase section */
 
 /* Begin PBXSourcesBuildPhase section */
+		B10000000000000000000006 /* Phone Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = ();
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 		6C072B2E2F22172000D7A219 /* Sources */ = {
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
@@ -300,6 +346,52 @@
 /* End PBXTargetDependency section */
 
 /* Begin XCBuildConfiguration section */
+		B10000000000000000000009 /* Phone Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = Y6BVY642DR;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_KEY_CFBundleDisplayName = TaskTool;
+				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
+				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
+				INFOPLIST_KEY_UISupportedInterfaceOrientations = "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				LD_RUNPATH_SEARCH_PATHS = "$(inherited) @executable_path/Frameworks";
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.tasktool.mll.TaskToolPhone;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = 1;
+			};
+			name = Debug;
+		};
+		B1000000000000000000000A /* Phone Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = Y6BVY642DR;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_KEY_CFBundleDisplayName = TaskTool;
+				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
+				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
+				INFOPLIST_KEY_UISupportedInterfaceOrientations = "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				LD_RUNPATH_SEARCH_PATHS = "$(inherited) @executable_path/Frameworks";
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.tasktool.mll.TaskToolPhone;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = 1;
+			};
+			name = Release;
+		};
 		6C072B532F22172300D7A219 /* Debug */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
@@ -643,6 +735,15 @@
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
+		B10000000000000000000008 /* Phone configuration list */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				B10000000000000000000009 /* Phone Debug */,
+				B1000000000000000000000A /* Phone Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
 		6C072B2D2F22172000D7A219 /* Build configuration list for PBXProject "TaskTool" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (

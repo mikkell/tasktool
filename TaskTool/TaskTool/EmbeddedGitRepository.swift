@@ -69,6 +69,38 @@ actor EmbeddedGitRepository {
         _ = try GitSyncFiles.reconcile(base: current, local: current, remote: current)
     }
 
+    func mobileSnapshot() throws -> RepositorySyncSnapshot {
+        try validateForUse()
+        return try GitSyncFiles.decode(workingFiles(tracked: files())).0
+    }
+
+    func saveMobileTask(_ expected: Task, status: String, body: String) throws {
+        let snapshot = try mobileSnapshot()
+        guard let entry = snapshot.tasks.first(where: { $0.task.id == expected.id }),
+              entry.path.split(separator: "/").count == 2,
+              entry.task == expected else { throw GitSyncError.dirtyWorkingCopy }
+        guard let plan = snapshot.plans.first(where: { $0.name == expected.plan }),
+              let newStatus = plan.statuses.first(where: { $0.name == status }),
+              status == expected.status || (!expected.isBundle && expected.parentBundleID == nil) else {
+            throw GitSyncError.invalidMetadata(entry.path)
+        }
+        guard status != expected.status || body != expected.body else { return }
+        var updated = expected
+        updated.status = status
+        updated.body = body
+        updated.updated = Date()
+        if newStatus.isDoneStatus && plan.statuses.first(where: { $0.name == expected.status })?.isDoneStatus != true {
+            updated.completedAt = updated.updated
+        }
+        let destination = try safeURL(entry.path)
+        guard let actual = try file(at: destination),
+              let text = String(data: actual.data, encoding: .utf8),
+              try MarkdownParser.parseTask(from: text, plan: expected.plan) == expected else {
+            throw GitSyncError.dirtyWorkingCopy
+        }
+        try MarkdownParser.serializeTask(updated).write(to: destination, atomically: false, encoding: .utf8)
+    }
+
     static func clone(from remote: GitHubRemote, to directory: URL, credentials: GitHubTokenStore) throws -> EmbeddedGitRepository {
         try clone(source: remote.url.absoluteString, to: directory, github: remote, localRemote: nil, credentials: credentials)
     }

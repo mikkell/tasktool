@@ -82,6 +82,64 @@ final class EmbeddedGitRepositoryTests: XCTestCase {
         XCTAssertEqual(merged.tasks.first?.task.body, "Phone edit")
     }
 
+    func testMobileOfflineEditsPreserveMetadataAndRejectStaleDrafts() async throws {
+        let (mac, _, _) = try await seed()
+        let initial = try await mac.mobileSnapshot()
+        var richTask = try XCTUnwrap(initial.tasks.first?.task)
+        richTask.tags = ["Important", "offline: test"]
+        richTask.dueDate = Date(timeIntervalSince1970: 1_800_000_000)
+        richTask.pingHistory = [Date(timeIntervalSince1970: 1_700_000_000)]
+        try write(Data(MarkdownParser.serializeTask(richTask).utf8), path: "Work/example.md", at: macURL)
+        let before = try await mac.mobileSnapshot()
+        let task = try XCTUnwrap(before.tasks.first?.task)
+        let head = try await mac.head()
+        try await mac.saveMobileTask(task, status: "Done", body: "Offline notes")
+        let after = try await mac.mobileSnapshot()
+        let updated = try XCTUnwrap(after.tasks.first?.task)
+        XCTAssertEqual(updated.status, "Done")
+        XCTAssertEqual(updated.body, "Offline notes")
+        XCTAssertEqual(updated.id, task.id)
+        XCTAssertEqual(updated.created, task.created)
+        XCTAssertNotNil(updated.completedAt)
+        XCTAssertEqual(updated.tags, task.tags)
+        XCTAssertEqual(updated.dueDate, task.dueDate)
+        XCTAssertEqual(updated.pingHistory, task.pingHistory)
+        let afterHead = try await mac.head()
+        XCTAssertEqual(afterHead, head)
+        do {
+            try await mac.saveMobileTask(task, status: "To Do", body: "Stale notes")
+            XCTFail("Expected stale draft rejection")
+        } catch GitSyncError.dirtyWorkingCopy {}
+        do {
+            try await mac.saveMobileTask(updated, status: "Invalid status", body: "Notes")
+            XCTFail("Expected unknown status rejection")
+        } catch GitSyncError.invalidMetadata {}
+        let onDisk = try await mac.mobileSnapshot()
+        XCTAssertEqual(onDisk.tasks.first?.task, updated)
+    }
+
+    func testMobileBundleNotesAreEditableButStatusChangesAreRejected() async throws {
+        let (mac, _, original) = try await seed()
+        let bundleID = UUID()
+        var child = original
+        child.parentBundleID = bundleID
+        let sibling = Task(title: "Sibling", plan: "Work", status: "To Do", parentBundleID: bundleID)
+        let bundle = Task(id: bundleID, title: "Bundle", plan: "Work", status: "To Do", bundledTaskIDs: [child.id, sibling.id])
+        for task in [child, sibling, bundle] {
+            try write(Data(MarkdownParser.serializeTask(task).utf8), path: "Work/\(task.fileName)", at: macURL)
+        }
+        let snapshot = try await mac.mobileSnapshot()
+        let loaded = try XCTUnwrap(snapshot.tasks.first(where: { $0.task.id == child.id })?.task)
+        do {
+            try await mac.saveMobileTask(loaded, status: "Done", body: loaded.body)
+            XCTFail("Expected bundle status change rejection")
+        } catch GitSyncError.invalidMetadata {}
+        try await mac.saveMobileTask(loaded, status: loaded.status, body: "Child notes")
+        let after = try await mac.mobileSnapshot()
+        XCTAssertEqual(after.tasks.first(where: { $0.task.id == child.id })?.task.body, "Child notes")
+        XCTAssertEqual(after.tasks.first(where: { $0.task.id == bundle.id })?.task.bundledTaskIDs, bundle.bundledTaskIDs)
+    }
+
     func testDirtyWorkingCopyAndConflictsDoNotOverwriteLocalEdits() async throws {
         let (mac, phone, task) = try await seed()
         let head = try await mac.head()

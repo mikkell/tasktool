@@ -108,6 +108,20 @@ public actor GitSyncClient {
         }
     }
 
+    func mobileSnapshot() async throws -> RepositorySyncSnapshot {
+        do {
+            guard let repository else { throw GitSyncError.wrongBranch }
+            return try await repository.mobileSnapshot()
+        } catch { throw await failure(error) }
+    }
+
+    func saveMobileTask(_ expected: Task, status: String, body: String) async throws {
+        do {
+            guard let repository else { throw GitSyncError.wrongBranch }
+            try await repository.saveMobileTask(expected, status: status, body: body)
+        } catch { throw await failure(error) }
+    }
+
     public func updateToken(_ token: String) throws {
         do {
             guard let remote else { throw GitHubCredentialError.invalidRemote }

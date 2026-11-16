@@ -28,7 +28,8 @@ let package = Package(
             sources: [
                 "Task.swift", "Plan.swift", "Settings.swift",
                 "MarkdownParser.swift", "TaskSyncMerge.swift", "RepositorySyncMerge.swift",
-                "GitHubCredentials.swift", "GitSyncFiles.swift", "EmbeddedGitRepository.swift", "GitSyncClient.swift"
+                "GitHubCredentials.swift", "GitSyncFiles.swift", "EmbeddedGitRepository.swift", "GitSyncClient.swift",
+                "MobileTaskStore.swift"
             ]
         ),
         .testTarget(
