@@ -195,6 +195,7 @@ private struct PhoneTaskEditor: View {
             }
             Section("Due Date") {
                 Toggle("Set due date", isOn: $hasDueDate)
+                    .tint(.blue)
                 if hasDueDate {
                     DatePicker("Due", selection: $dueDate, displayedComponents: .date)
                 }
