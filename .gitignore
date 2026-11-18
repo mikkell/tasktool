@@ -4,6 +4,7 @@
 
 ## User settings
 xcuserdata/
+TaskTool/LocalSigning.xcconfig
 
 ## Obj-C/Swift specific
 *.hmap

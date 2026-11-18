@@ -58,6 +58,11 @@ open TaskTool.xcodeproj
 # Build and run (⌘R in Xcode)
 ```
 
+For signing on a physical device, create `TaskTool/LocalSigning.xcconfig` with
+`DEVELOPMENT_TEAM = YOUR_TEAM_ID`. This file is ignored by Git and applies to
+both app targets. Avoid selecting a team in Xcode's target signing settings,
+which writes it back into the shared project. Simulator builds need no team.
+
 ## 🎯 Quick Start
 
 1. **Launch TaskTool**
