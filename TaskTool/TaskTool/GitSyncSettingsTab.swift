@@ -22,8 +22,10 @@ struct GitSyncSettingsTab: View {
                         .disabled(taskStore.isSyncing)
                     }
                 } else {
-                    TextField("https://github.com/owner/task-data.git", text: $remoteURL)
-                    Text("Connect to a dedicated private task-data repository on its main branch. Your current folder will not be imported or modified.")
+                    TextField("Repository URL", text: $remoteURL, prompt: Text("Repository URL"))
+                        .labelsHidden()
+                        .textFieldStyle(.roundedBorder)
+                    Text("Enter the HTTPS URL of a dedicated private GitHub task-data repository on its main branch. Your current folder will not be imported or modified.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }

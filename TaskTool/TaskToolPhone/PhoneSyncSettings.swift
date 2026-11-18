@@ -12,7 +12,7 @@ struct PhoneSyncSettings: View {
                 if let remote = store.remoteURL {
                     Text(remote).textSelection(.enabled)
                 } else {
-                    TextField("https://github.com/owner/task-data.git", text: $remoteURL)
+                    TextField("Repository URL", text: $remoteURL, prompt: Text("Repository URL"))
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()
                         .keyboardType(.URL)
