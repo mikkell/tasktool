@@ -51,7 +51,7 @@ struct GeneralSettingsTab: View {
                             .disabled(taskStore.gitRemoteURL != nil)
                     }
                     if taskStore.gitRemoteURL != nil {
-                        Text("Disconnect Git sync before choosing another storage folder.")
+                        Text("To move the synced folder, use Relocate Checkout in Git Sync. Disconnect to return to a non-Git folder.")
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }

@@ -43,6 +43,12 @@ actor EmbeddedGitRepository {
     deinit { git_repository_free(pointer) }
 
     static func open(at directory: URL, remote: GitHubRemote, credentials: GitHubTokenStore) throws -> EmbeddedGitRepository {
+        try open(at: directory, github: remote, localRemote: nil, credentials: credentials)
+    }
+
+    private static func open(
+        at directory: URL, github: GitHubRemote?, localRemote: URL?, credentials: GitHubTokenStore?
+    ) throws -> EmbeddedGitRepository {
         guard runtime >= 0 else { throw GitSyncError.operation("initialize", runtime) }
         var repository: OpaquePointer?
         try check(git_repository_open(&repository, directory.path), "open repository")
@@ -54,7 +60,58 @@ actor EmbeddedGitRepository {
             git_repository_free(repository)
             throw GitSyncError.unsupportedFile(directory.path)
         }
-        return EmbeddedGitRepository(pointer: repository, directory: directory, github: remote, localRemote: nil, credentials: credentials)
+        return EmbeddedGitRepository(pointer: repository, directory: directory, github: github, localRemote: localRemote, credentials: credentials)
+    }
+
+    func relocated(to destination: URL) async throws -> EmbeddedGitRepository {
+        try ready()
+        let remote = try origin()
+        git_remote_free(remote)
+        let sourcePath = directory.resolvingSymlinksInPath().standardizedFileURL.path
+            .precomposedStringWithCanonicalMapping.lowercased()
+        let destinationPath = destination.deletingLastPathComponent().resolvingSymlinksInPath()
+            .appendingPathComponent(destination.lastPathComponent).standardizedFileURL.path
+            .precomposedStringWithCanonicalMapping.lowercased()
+        guard destination.isFileURL, destinationPath != sourcePath,
+              !destinationPath.hasPrefix(sourcePath + "/"),
+              !sourcePath.hasPrefix(destinationPath + "/"),
+              !manager.fileExists(atPath: destination.path) else {
+            throw GitSyncError.unsupportedFile(destination.path)
+        }
+        let before = try checkoutFiles(at: directory)
+        guard !before.keys.contains(where: { $0.hasPrefix(".git/") && $0.hasSuffix(".lock") }) else {
+            throw GitSyncError.dirtyWorkingCopy
+        }
+        try manager.copyItem(at: directory, to: destination)
+        guard try checkoutFiles(at: destination) == before,
+              try checkoutFiles(at: directory) == before else { throw GitSyncError.dirtyWorkingCopy }
+        let relocated = try Self.open(at: destination, github: github, localRemote: localRemote, credentials: credentials)
+        try await relocated.validateRelocation()
+        return relocated
+    }
+
+    private func validateRelocation() throws {
+        try ready()
+        let remote = try origin()
+        git_remote_free(remote)
+    }
+
+    private func checkoutFiles(at root: URL) throws -> [String: GitSyncFile] {
+        var result: [String: GitSyncFile] = [:]
+        func walk(_ folder: URL, prefix: String) throws {
+            for url in try manager.contentsOfDirectory(at: folder, includingPropertiesForKeys: [.isDirectoryKey, .isSymbolicLinkKey]) {
+                let path = prefix + url.lastPathComponent
+                let values = try url.resourceValues(forKeys: [.isDirectoryKey, .isSymbolicLinkKey])
+                guard values.isSymbolicLink != true else { throw GitSyncError.unsupportedFile(path) }
+                if values.isDirectory == true {
+                    try walk(url, prefix: path + "/")
+                } else {
+                    result[path] = try file(at: url)
+                }
+            }
+        }
+        try walk(root, prefix: "")
+        return result
     }
 
     func hasPendingApplication() throws -> Bool {

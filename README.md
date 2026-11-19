@@ -70,6 +70,25 @@ which writes it back into the shared project. Simulator builds need no team.
 3. **Create a plan** — Click "Create Plan" in the sidebar (e.g., "Work", "Personal")
 4. **Add tasks** — Press **⌘N** or click "New Task" and start organising
 
+### Git sync and direct file access
+
+On macOS, **Settings → Git Sync → Choose Checkout Parent Folder…** lets you
+keep a new checkout outside the app container. TaskTool creates a folder named
+after the repository inside the selected parent and remembers access across launches.
+Use a local folder rather than OneDrive or iCloud Drive; Git handles device sync.
+
+For an existing connection, use **Relocate Checkout…**. This copies the entire
+checkout, including hidden Git history and unsynced files, then switches the app
+to the new location. The old checkout remains a backup; edit only the new one.
+Existing destination folders are never overwritten or merged. Relocation also
+preserves files with invalid task metadata so they can be repaired externally.
+An interrupted sync must be recovered before relocating.
+
+Editors and AI agents can read and write Markdown/YAML directly in the new
+checkout. Keep the task's `plan` field consistent with its top-level plan folder.
+Pause external edits during relocation or sync, and do not run concurrent Git
+operations against the app's checkout. The iPhone still uses app-managed storage.
+
 Your storage folder will look like this after setup:
 
 ```

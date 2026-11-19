@@ -5,6 +5,8 @@ struct GitSyncSettingsTab: View {
     @State private var remoteURL = ""
     @State private var token = ""
     @State private var confirmingDisconnect = false
+    @State private var checkoutParent: URL?
+    @State private var confirmingRelocation = false
 
     var body: some View {
         Form {
@@ -12,7 +14,9 @@ struct GitSyncSettingsTab: View {
                 if let remote = taskStore.gitRemoteURL {
                     Text(remote)
                         .textSelection(.enabled)
-                    Text("Tasks are stored in an app-managed checkout, separate from your previous folder.")
+                    Text(taskStore.hasExternalGitCheckout
+                         ? "Tasks are stored in your selected checkout folder, accessible to editors and CLI agents."
+                         : "Tasks are stored in an app-managed checkout. Relocate it to make the files accessible to editors and CLI agents.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                     if let directory = taskStore.storageURL {
@@ -20,7 +24,13 @@ struct GitSyncSettingsTab: View {
                             NSWorkspace.shared.selectFile(nil, inFileViewerRootedAtPath: directory.path)
                         }
                         .disabled(taskStore.isSyncing)
+                        Text(directory.path)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .textSelection(.enabled)
                     }
+                    Button("Relocate Checkout…") { confirmingRelocation = true }
+                        .disabled(!taskStore.canRelocateGitCheckout)
                 } else {
                     TextField("Repository URL", text: $remoteURL, prompt: Text("Repository URL"))
                         .labelsHidden()
@@ -28,6 +38,19 @@ struct GitSyncSettingsTab: View {
                     Text("Enter the HTTPS URL of a dedicated private GitHub task-data repository on its main branch. Your current folder will not be imported or modified.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
+                    Button("Choose Checkout Parent Folder…") {
+                        checkoutParent = chooseCheckoutParent()
+                    }
+                    if let checkoutParent {
+                        Text("A new repository-named folder will be created inside \(checkoutParent.path).")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        Button("Use App-Managed Location") { self.checkoutParent = nil }
+                    } else {
+                        Text("Default: app-managed storage. Choose a local folder for direct editor and CLI access.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
                 }
             }
             Section("Authentication") {
@@ -46,7 +69,7 @@ struct GitSyncSettingsTab: View {
                 } else {
                     Button("Connect Repository") {
                         _Concurrency.Task {
-                            await taskStore.configureGitSync(remoteURL: remoteURL, token: token)
+                            await taskStore.configureGitSync(remoteURL: remoteURL, token: token, checkoutParent: checkoutParent)
                             token = ""
                         }
                     }
@@ -110,5 +133,26 @@ struct GitSyncSettingsTab: View {
         } message: {
             Text("Return to your previous storage folder and remove the saved token. The checkout and its local commits are retained. Unsynced tasks are not copied back to the previous folder.")
         }
+        .alert("Relocate Git Checkout?", isPresented: $confirmingRelocation) {
+            Button("Cancel", role: .cancel) {}
+            Button("Choose Parent Folder…") {
+                if let parent = chooseCheckoutParent() {
+                    _Concurrency.Task { await taskStore.relocateGitCheckout(to: parent) }
+                }
+            }
+        } message: {
+            Text("Copy all tasks, unsynced files and Git history to a new repository-named folder, then switch to it. The old checkout is retained as a backup. Pause other editors and Git tools until this finishes. Existing destination folders will not be overwritten. Use a local folder, not OneDrive or iCloud Drive.")
+        }
+    }
+
+    private func chooseCheckoutParent() -> URL? {
+        let panel = NSOpenPanel()
+        panel.canChooseDirectories = true
+        panel.canChooseFiles = false
+        panel.canCreateDirectories = true
+        panel.allowsMultipleSelection = false
+        panel.message = "Choose a local parent folder. TaskTool creates a new repository-named folder inside it; existing folders are never overwritten. Avoid OneDrive and iCloud Drive."
+        panel.prompt = "Choose"
+        return panel.runModal() == .OK ? panel.url : nil
     }
 }

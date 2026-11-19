@@ -61,6 +61,91 @@ final class EmbeddedGitRepositoryTests: XCTestCase {
         XCTAssertEqual(try Data(contentsOf: macURL.appendingPathComponent("Work/attachments/photo.bin")), binary)
     }
 
+    func testRelocationPreservesGitHistoryUncommittedFilesAndCanSyncFromDestination() async throws {
+        let (mac, phone, _) = try await seed()
+        let snapshot = try await mac.mobileSnapshot()
+        let original = try XCTUnwrap(snapshot.tasks.first?.task)
+        let head = try await mac.head()
+        let notes = "- [ ] Unsynced subtask\n\nExternal editor notes"
+        try await mac.saveMobileTask(original, status: original.status, dueDate: original.dueDate, body: notes)
+        let binary = Data([0, 1, 255, 128])
+        try write(binary, path: "Work/attachments/local.bin", at: macURL)
+        try write(Data("Scratch".utf8), path: "scratch.txt", at: macURL)
+        let destination = root.appendingPathComponent("external")
+        let moved = try await mac.relocated(to: destination)
+        let movedHead = try await moved.head()
+        XCTAssertEqual(movedHead, head)
+        let movedSnapshot = try await moved.mobileSnapshot()
+        XCTAssertEqual(movedSnapshot.tasks.first?.task.body, notes)
+        XCTAssertEqual(try Data(contentsOf: destination.appendingPathComponent("Work/attachments/local.bin")), binary)
+        XCTAssertEqual(try String(contentsOf: destination.appendingPathComponent("scratch.txt"), encoding: .utf8), "Scratch")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: macURL.appendingPathComponent(".git/HEAD").path))
+        try await moved.commitWorkingCopy(message: "Save after relocation")
+        try await moved.synchronize()
+        try await phone.synchronize()
+        let received = try await phone.mobileSnapshot()
+        XCTAssertEqual(received.tasks.first?.task.body, notes)
+        let originalHead = try await mac.head()
+        XCTAssertEqual(originalHead, head, "Relocation must retain the old checkout as a backup.")
+    }
+
+    func testRelocationRetainsInvalidTaskMetadataForExternalRepair() async throws {
+        let (mac, _, _) = try await seed()
+        let invalid = Data("---\nplan: Old name\n---\n# Keep this task\n".utf8)
+        try write(invalid, path: "Work/Archived/old.md", at: macURL)
+        let destination = root.appendingPathComponent("external")
+        let moved = try await mac.relocated(to: destination)
+        XCTAssertEqual(try Data(contentsOf: destination.appendingPathComponent("Work/Archived/old.md")), invalid)
+        XCTAssertEqual(try Data(contentsOf: macURL.appendingPathComponent("Work/Archived/old.md")), invalid)
+        do {
+            try await moved.validateForUse()
+            XCTFail("Relocation must preserve malformed files, not silently repair or discard them.")
+        } catch GitSyncError.invalidMetadata("Work/Archived/old.md") {}
+    }
+
+    func testRelocationRefusesExistingNestedSymlinkAndPendingRecoveryDestinations() async throws {
+        let (mac, _, _) = try await seed()
+        let existing = root.appendingPathComponent("existing")
+        try FileManager.default.createDirectory(at: existing, withIntermediateDirectories: true)
+        let marker = existing.appendingPathComponent("keep.txt")
+        try Data("Keep".utf8).write(to: marker)
+        for destination in [existing, macURL!, macURL.appendingPathComponent("nested")] {
+            do {
+                _ = try await mac.relocated(to: destination)
+                XCTFail("Expected unsafe destination rejection")
+            } catch GitSyncError.unsupportedFile {}
+        }
+        XCTAssertEqual(try String(contentsOf: marker, encoding: .utf8), "Keep")
+        let linkedParent = root.appendingPathComponent("linked")
+        try FileManager.default.createSymbolicLink(at: linkedParent, withDestinationURL: macURL)
+        do {
+            _ = try await mac.relocated(to: linkedParent.appendingPathComponent("nested"))
+            XCTFail("Expected resolved nested path rejection")
+        } catch GitSyncError.unsupportedFile {}
+        let caseAlias = macURL.deletingLastPathComponent().appendingPathComponent(macURL.lastPathComponent.uppercased())
+        if FileManager.default.fileExists(atPath: caseAlias.path) {
+            do {
+                _ = try await mac.relocated(to: caseAlias.appendingPathComponent("nested"))
+                XCTFail("Expected case-aliased nested path rejection")
+            } catch GitSyncError.unsupportedFile {}
+        }
+        let destination = root.appendingPathComponent("external")
+        let lock = macURL.appendingPathComponent(".git/index.lock")
+        try Data().write(to: lock)
+        do {
+            _ = try await mac.relocated(to: destination)
+            XCTFail("Expected active Git lock rejection")
+        } catch GitSyncError.dirtyWorkingCopy {}
+        XCTAssertFalse(FileManager.default.fileExists(atPath: destination.path))
+        try FileManager.default.removeItem(at: lock)
+        try Data("Pending recovery".utf8).write(to: macURL.appendingPathComponent(".git/tasktool-sync-pending.json"))
+        do {
+            _ = try await mac.relocated(to: destination)
+            XCTFail("Expected pending application rejection")
+        } catch GitSyncError.recoveryRequired {}
+        XCTAssertFalse(FileManager.default.fileExists(atPath: destination.path))
+    }
+
     func testNonFastForwardPushIsRejectedAndSyncCanRetryWithoutForcePush() async throws {
         let (mac, phone, task) = try await seed()
         var local = task

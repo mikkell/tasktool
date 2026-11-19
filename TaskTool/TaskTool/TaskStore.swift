@@ -16,9 +16,30 @@ protocol TaskStoreGitService: Actor {
     func recover() async throws
     func updateToken(_ token: String) async throws
     func disconnect() async throws
+    func relocate(from source: URL, to directory: URL, remoteURL: String) async throws
 }
 
 extension GitSyncClient: TaskStoreGitService {}
+
+protocol GitCheckoutFolderAccess {
+    func start(_ url: URL) -> Bool
+    func stop(_ url: URL)
+    func bookmark(_ url: URL) throws -> Data
+    func resolve(_ data: Data) throws -> (url: URL, stale: Bool)
+}
+
+struct SecurityScopedGitCheckoutAccess: GitCheckoutFolderAccess {
+    func start(_ url: URL) -> Bool { url.startAccessingSecurityScopedResource() }
+    func stop(_ url: URL) { url.stopAccessingSecurityScopedResource() }
+    func bookmark(_ url: URL) throws -> Data {
+        try url.bookmarkData(options: .withSecurityScope, includingResourceValuesForKeys: nil, relativeTo: nil)
+    }
+    func resolve(_ data: Data) throws -> (url: URL, stale: Bool) {
+        var stale = false
+        let url = try URL(resolvingBookmarkData: data, options: .withSecurityScope, relativeTo: nil, bookmarkDataIsStale: &stale)
+        return (url, stale)
+    }
+}
 
 /// Debug-only logging. The `@autoclosure` defers string interpolation so the
 /// (sometimes expensive, e.g. array-mapping) message is never built in Release builds.
@@ -42,6 +63,8 @@ enum TaskStoreError: LocalizedError {
     case taskNotFound(UUID)
     case gitOperationInProgress
     case gitRecoveryRequired
+    case checkoutDestinationExists
+    case checkoutAccessDenied
 
     var errorDescription: String? {
         switch self {
@@ -53,6 +76,10 @@ enum TaskStoreError: LocalizedError {
             return "Wait for the Git operation to finish before editing tasks."
         case .gitRecoveryRequired:
             return "Recover the interrupted Git sync before editing tasks."
+        case .checkoutDestinationExists:
+            return "The checkout folder already exists. Choose another parent folder; existing folders are never overwritten."
+        case .checkoutAccessDenied:
+            return "Access to the checkout folder was denied. Choose the folder again to grant access."
         }
     }
 }
@@ -74,11 +101,17 @@ class TaskStore: ObservableObject {
     @Published private(set) var gitStorageUnavailable = false
 
     var canEditStorage: Bool { !isSyncing && !needsGitRecovery && !gitStorageUnavailable }
+    var hasExternalGitCheckout: Bool { defaults.data(forKey: "gitSyncCheckoutBookmark") != nil }
+    var canRelocateGitCheckout: Bool {
+        gitRemoteURL != nil && storageURL != nil && !isSyncing && !needsGitRecovery && openEditors.isEmpty
+    }
     
     private let fileManager = FileManager.default
     private let gitClient: any TaskStoreGitService
     private let defaults: UserDefaults
     private let gitRepositoriesURL: URL?
+    private let checkoutAccess: any GitCheckoutFolderAccess
+    private var checkoutScope: URL?
     private var didLoadStoredLocation = false
     private var isLoadingData = false
     private var openEditors: Set<UUID> = []
@@ -99,10 +132,12 @@ class TaskStore: ObservableObject {
     init(
         gitClient: any TaskStoreGitService = GitSyncClient(),
         defaults: UserDefaults = .standard,
-        gitRepositoriesURL: URL? = nil
+        gitRepositoriesURL: URL? = nil,
+        checkoutAccess: (any GitCheckoutFolderAccess)? = nil
     ) {
         self.gitClient = gitClient
         self.defaults = defaults
+        self.checkoutAccess = checkoutAccess ?? SecurityScopedGitCheckoutAccess()
         self.gitRepositoriesURL = gitRepositoriesURL ?? FileManager.default.urls(
             for: .applicationSupportDirectory, in: .userDomainMask
         ).first?.appendingPathComponent("TaskTool/GitRepositories", isDirectory: true)
@@ -189,19 +224,33 @@ class TaskStore: ObservableObject {
         }
     }
 
-    func configureGitSync(remoteURL: String, token: String) async {
+    func configureGitSync(remoteURL: String, token: String, checkoutParent: URL? = nil) async {
         guard canEditStorage, gitRemoteURL == nil else { return }
+        var grantedParent: URL?
+        defer { if let grantedParent { checkoutAccess.stop(grantedParent) } }
         do {
             let remote = try GitSyncClient.canonicalRemoteURL(remoteURL.trimmingCharacters(in: .whitespacesAndNewlines))
-            guard let root = gitRepositoriesURL else { throw TaskStoreError.storageUnavailable }
             let id = UUID().uuidString
-            let directory = root.appendingPathComponent(id, isDirectory: true)
+            let directory: URL
+            let bookmark: Data?
+            if let parent = checkoutParent {
+                guard checkoutAccess.start(parent) else { throw TaskStoreError.checkoutAccessDenied }
+                grantedParent = parent
+                directory = try externalCheckoutDirectory(parent: parent, remote: remote)
+                bookmark = try checkoutAccess.bookmark(parent)
+            } else {
+                guard let root = gitRepositoriesURL else { throw TaskStoreError.storageUnavailable }
+                try fileManager.createDirectory(at: root, withIntermediateDirectories: true)
+                directory = root.appendingPathComponent(id, isDirectory: true)
+                bookmark = nil
+            }
             beginGitOperation("Cloning repository...")
             defer { endGitOperation() }
-            try fileManager.createDirectory(at: root, withIntermediateDirectories: true)
             try await gitClient.clone(remoteURL: remote, to: directory, token: token)
             defaults.set(remote, forKey: "gitSyncRemoteURL")
             defaults.set(id, forKey: "gitSyncRepositoryID")
+            saveCheckoutLocation(parent: grantedParent, bookmark: bookmark, name: directory.lastPathComponent)
+            grantedParent = nil
             storageURL = directory
             gitRemoteURL = remote
             gitStorageUnavailable = false
@@ -228,9 +277,28 @@ class TaskStore: ObservableObject {
         defer { endGitOperation() }
         gitRemoteURL = remote
         gitStorageUnavailable = true
-        let directory = root.appendingPathComponent(id, isDirectory: true)
-        storageURL = directory
+        var grantedParent: URL?
+        defer { if let grantedParent { checkoutAccess.stop(grantedParent) } }
         do {
+            let directory: URL
+            var refreshedBookmark: Data?
+            if let bookmark = defaults.data(forKey: "gitSyncCheckoutBookmark") {
+                let resolved = try checkoutAccess.resolve(bookmark)
+                guard checkoutAccess.start(resolved.url) else { throw TaskStoreError.checkoutAccessDenied }
+                grantedParent = resolved.url
+                guard let name = defaults.string(forKey: "gitSyncCheckoutName"),
+                      !name.isEmpty, name != ".", name != "..", !name.contains("/"), !name.contains("\\") else {
+                    throw TaskStoreError.storageUnavailable
+                }
+                directory = resolved.url.appendingPathComponent(name, isDirectory: true)
+                refreshedBookmark = resolved.stale ? try checkoutAccess.bookmark(resolved.url) : bookmark
+            } else {
+                directory = root.appendingPathComponent(id, isDirectory: true)
+            }
+            storageURL = directory
+            // Retain folder access even if invalid task metadata prevents opening.
+            saveCheckoutLocation(parent: grantedParent, bookmark: refreshedBookmark, name: directory.lastPathComponent)
+            grantedParent = nil
             try await gitClient.open(remoteURL: remote, at: directory)
             gitStorageUnavailable = false
             autoSync.requestSync()
@@ -238,6 +306,45 @@ class TaskStore: ObservableObject {
         } catch {
             showGitFailure(error)
         }
+    }
+
+    func relocateGitCheckout(to parent: URL) async {
+        guard canRelocateGitCheckout, let source = storageURL, let remote = gitRemoteURL else { return }
+        var granted = false
+        defer { if granted { checkoutAccess.stop(parent) } }
+        do {
+            guard checkoutAccess.start(parent) else { throw TaskStoreError.checkoutAccessDenied }
+            granted = true
+            let destination = try externalCheckoutDirectory(parent: parent, remote: remote)
+            let bookmark = try checkoutAccess.bookmark(parent)
+            let conflicts = gitSyncConflicts
+            beginGitOperation("Copying checkout. Keep other editors and Git tools paused...")
+            defer {
+                gitSyncConflicts = conflicts
+                endGitOperation()
+            }
+            try await gitClient.relocate(from: source, to: destination, remoteURL: remote)
+            saveCheckoutLocation(parent: parent, bookmark: bookmark, name: destination.lastPathComponent)
+            granted = false
+            storageURL = destination
+            gitStorageUnavailable = false
+            gitSyncMessage = "Checkout relocated. The previous folder is retained as a backup; edit only the new checkout."
+        } catch { showGitFailure(error) }
+    }
+
+    private func externalCheckoutDirectory(parent: URL, remote: String) throws -> URL {
+        guard parent.isFileURL, let url = URL(string: remote) else { throw TaskStoreError.storageUnavailable }
+        let name = url.deletingPathExtension().lastPathComponent
+        let destination = parent.appendingPathComponent(name, isDirectory: true)
+        guard !fileManager.fileExists(atPath: destination.path) else { throw TaskStoreError.checkoutDestinationExists }
+        return destination
+    }
+
+    private func saveCheckoutLocation(parent: URL?, bookmark: Data?, name: String) {
+        if let checkoutScope { checkoutAccess.stop(checkoutScope) }
+        checkoutScope = parent
+        defaults.set(bookmark, forKey: "gitSyncCheckoutBookmark")
+        defaults.set(parent == nil ? nil : name, forKey: "gitSyncCheckoutName")
     }
 
     func syncGit() async {
@@ -291,6 +398,7 @@ class TaskStore: ObservableObject {
             try await gitClient.disconnect()
             defaults.removeObject(forKey: "gitSyncRemoteURL")
             defaults.removeObject(forKey: "gitSyncRepositoryID")
+            saveCheckoutLocation(parent: nil, bookmark: nil, name: "")
             gitRemoteURL = nil
             needsGitRecovery = false
             gitStorageUnavailable = false
@@ -328,7 +436,9 @@ class TaskStore: ObservableObject {
     }
 
     private func showGitFailure(_ error: Error) {
-        if let failure = error as? GitSyncFailure {
+        if let error = error as? TaskStoreError {
+            gitSyncMessage = error.localizedDescription
+        } else if let failure = error as? GitSyncFailure {
             gitSyncMessage = failure.message
             gitSyncConflicts = failure.conflicts
             needsGitRecovery = needsGitRecovery || failure.requiresRecovery

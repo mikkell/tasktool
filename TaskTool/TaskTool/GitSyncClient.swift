@@ -105,6 +105,15 @@ public actor GitSyncClient {
         }
     }
 
+    public func relocate(from source: URL, to directory: URL, remoteURL: String) async throws {
+        do {
+            let target = try GitHubRemote(remoteURL)
+            let original = try EmbeddedGitRepository.open(at: source, remote: target, credentials: tokens)
+            repository = try await original.relocated(to: directory)
+            remote = target
+        } catch { throw await failure(error) }
+    }
+
     public func recover() async throws {
         do {
             guard let repository else { throw GitSyncError.recoveryRequired }
