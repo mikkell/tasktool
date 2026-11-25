@@ -7,11 +7,99 @@
 
 import Foundation
 
+enum TaskPriority: String, Codable, CaseIterable, Hashable, Comparable {
+    case low
+    case medium
+    case high
+
+    var displayName: String {
+        switch self {
+        case .low: return "Low"
+        case .medium: return "Medium"
+        case .high: return "High"
+        }
+    }
+
+    var colorName: String {
+        switch self {
+        case .low: return "gray"
+        case .medium: return "orange"
+        case .high: return "red"
+        }
+    }
+
+    var symbolName: String {
+        switch self {
+        case .low: return "arrow.down"
+        case .medium: return "minus"
+        case .high: return "exclamationmark"
+        }
+    }
+
+    private var rank: Int {
+        switch self {
+        case .low: return 1
+        case .medium: return 2
+        case .high: return 3
+        }
+    }
+
+    static func < (lhs: TaskPriority, rhs: TaskPriority) -> Bool {
+        lhs.rank < rhs.rank
+    }
+}
+
+enum TaskRecurrence: String, Codable, CaseIterable, Hashable {
+    case daily
+    case weekdays
+    case weekly
+    case biweekly
+    case monthly
+    case yearly
+
+    var displayName: String {
+        switch self {
+        case .daily: return "Daily"
+        case .weekdays: return "Weekdays"
+        case .weekly: return "Weekly"
+        case .biweekly: return "Every 2 Weeks"
+        case .monthly: return "Monthly"
+        case .yearly: return "Yearly"
+        }
+    }
+
+    /// Computes the next due date after `referenceDate` according to this recurrence cadence.
+    func nextDueDate(from referenceDate: Date, calendar: Calendar = .current) -> Date {
+        switch self {
+        case .daily:
+            return calendar.date(byAdding: .day, value: 1, to: referenceDate) ?? referenceDate
+        case .weekdays:
+            // Advance at least 1 day, skipping Saturday (7) and Sunday (1) in Gregorian calendar.
+            var candidate = calendar.date(byAdding: .day, value: 1, to: referenceDate) ?? referenceDate
+            while calendar.isDateInWeekend(candidate) {
+                guard let next = calendar.date(byAdding: .day, value: 1, to: candidate) else { break }
+                candidate = next
+            }
+            return candidate
+        case .weekly:
+            return calendar.date(byAdding: .day, value: 7, to: referenceDate) ?? referenceDate
+        case .biweekly:
+            return calendar.date(byAdding: .day, value: 14, to: referenceDate) ?? referenceDate
+        case .monthly:
+            return calendar.date(byAdding: .month, value: 1, to: referenceDate) ?? referenceDate
+        case .yearly:
+            return calendar.date(byAdding: .year, value: 1, to: referenceDate) ?? referenceDate
+        }
+    }
+}
+
 struct Task: Identifiable, Codable, Hashable {
     let id: UUID
     var title: String
     var plan: String
     var status: String  // Changed from TaskStatus enum to String
+    var priority: TaskPriority?
+    var recurrence: TaskRecurrence?
     var dueDate: Date?
     var tags: [String]
     var created: Date
@@ -42,6 +130,8 @@ struct Task: Identifiable, Codable, Hashable {
         title: String,
         plan: String,
         status: String = "todo",  // Default status
+        priority: TaskPriority? = nil,
+        recurrence: TaskRecurrence? = nil,
         dueDate: Date? = nil,
         tags: [String] = [],
         created: Date = Date(),
@@ -57,6 +147,8 @@ struct Task: Identifiable, Codable, Hashable {
         self.title = title
         self.plan = plan
         self.status = status
+        self.priority = priority
+        self.recurrence = recurrence
         self.dueDate = dueDate
         self.tags = tags
         self.created = created

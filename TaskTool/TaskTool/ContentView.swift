@@ -243,6 +243,9 @@ struct ContentView: View {
     @State private var showingOverview = true
     @State private var showingNewPlan = false
     @State private var showingNewTask = false
+    @State private var showingCommandPalette = false
+    @State private var paletteTaskToOpen: Task?
+    @State private var paletteNewTaskPlan: Plan?
     @State private var editingPlan: Plan?
     @State private var planToDelete: Plan?
     @State private var deleteErrorMessage = ""
@@ -357,15 +360,33 @@ struct ContentView: View {
                 .navigationSplitViewColumnWidth(min: 180, ideal: 200)
                 .background(
                     // Hidden buttons wire up ⌘1-⌘9 to jump directly to the plan at that
-                    // sidebar position (by current sort order). Plans beyond the 9th don't
-                    // get a shortcut, matching the visible number badges in the sidebar.
-                    ForEach(1...9, id: \.self) { number in
-                        Button("") { selectPlan(atShortcutNumber: number) }
-                            .keyboardShortcut(KeyEquivalent(Character(String(number))), modifiers: .command)
-                            .hidden()
+                    // sidebar position (by current sort order) and ⌘K for the global command palette.
+                    Group {
+                        ForEach(1...9, id: \.self) { number in
+                            Button("") { selectPlan(atShortcutNumber: number) }
+                                .keyboardShortcut(KeyEquivalent(Character(String(number))), modifiers: .command)
+                                .hidden()
+                        }
+                        Button("") {
+                            withAnimation(.taskToolQuickFeedback) {
+                                showingCommandPalette.toggle()
+                            }
+                        }
+                        .keyboardShortcut("k", modifiers: .command)
+                        .hidden()
                     }
                 )
                 .toolbar {
+                    ToolbarItem(placement: .automatic) {
+                        Button(action: {
+                            withAnimation(.taskToolQuickFeedback) {
+                                showingCommandPalette = true
+                            }
+                        }) {
+                            Label("Command Palette", systemImage: "command")
+                        }
+                        .help("Open Command Palette (⌘K)")
+                    }
                     ToolbarItem(placement: .automatic) {
                         Menu {
                             Button("Change Storage Location...") {
@@ -396,6 +417,14 @@ struct ContentView: View {
             }
             .sheet(isPresented: $showingNewPlan) {
                 NewPlanView()
+                    .modifier(DeferAutomaticSync())
+            }
+            .sheet(item: $paletteNewTaskPlan) { plan in
+                NewTaskView(plan: plan)
+                    .modifier(DeferAutomaticSync())
+            }
+            .sheet(item: $paletteTaskToOpen) { task in
+                TaskDetailView(task: task)
                     .modifier(DeferAutomaticSync())
             }
             .sheet(item: $editingPlan) { plan in
@@ -437,6 +466,38 @@ struct ContentView: View {
             }
         }
         .disabled(!taskStore.canEditStorage)
+        .overlay {
+            if showingCommandPalette && taskStore.storageURL != nil {
+                CommandPaletteView(
+                    activePlan: showingOverview ? nil : selectedPlan,
+                    onDismiss: { showingCommandPalette = false },
+                    onSelectOverview: {
+                        selectedPlan = nil
+                        showingOverview = true
+                    },
+                    onSelectPlan: { plan in
+                        selectedPlan = plan
+                        showingOverview = false
+                    },
+                    onOpenTask: { task in
+                        if let taskPlan = taskStore.plans.first(where: { $0.name == task.plan }) {
+                            selectedPlan = taskPlan
+                            showingOverview = false
+                        }
+                        paletteTaskToOpen = task
+                    },
+                    onCreatePlan: {
+                        showingNewPlan = true
+                    },
+                    onCreateTask: { plan in
+                        selectedPlan = plan
+                        showingOverview = false
+                        paletteNewTaskPlan = plan
+                    }
+                )
+                .transition(.opacity)
+            }
+        }
         .overlay(alignment: .bottomTrailing) {
             VStack(alignment: .trailing, spacing: 10) {
                 if let notice = taskStore.outlookCaptureNotice {
@@ -610,6 +671,8 @@ struct PlanDetailView: View {
     @State private var showingEditStatuses = false
     @State private var showingArchiveConfirmation = false
     @State private var searchText = ""
+    @State private var filter = TaskBoardFilter()
+    @State private var showingFilterBar = false
     @FocusState private var isSearchFieldFocused: Bool
     @State private var selectedTaskIDs: Set<UUID> = []
     @State private var showingBulkDeleteConfirm = false
@@ -624,14 +687,29 @@ struct PlanDetailView: View {
         // card is shown on the board; children remain accessible via BundleDetailView.
         return taskStore.tasks.filter { $0.plan == plan.name && $0.parentBundleID == nil }
     }
+
+    /// Tags currently used by tasks in this plan, sorted alphabetically for filter chips.
+    private var availablePlanTags: [String] {
+        var seen: [String: String] = [:]
+        for task in planTasks {
+            for tag in task.tags {
+                let key = tag.lowercased()
+                if seen[key] == nil { seen[key] = tag }
+            }
+        }
+        return seen.values.sorted { $0.localizedCaseInsensitiveCompare($1) == .orderedAscending }
+    }
     
     var filteredPlanTasks: [Task] {
-        guard !searchText.isEmpty else { return planTasks }
-        let query = searchText.lowercased()
+        guard !searchText.isEmpty || filter.isActive else { return planTasks }
+        let doneName = doneStatusName
         return planTasks.filter { task in
-            task.title.lowercased().contains(query) ||
-            task.body.lowercased().contains(query) ||
-            task.tags.contains(where: { $0.lowercased().contains(query) })
+            filter.matches(
+                task,
+                searchText: searchText,
+                effectiveDueDate: effectiveDueDate(for: task),
+                isDone: doneName != nil && task.status == doneName
+            )
         }
     }
     
@@ -696,6 +774,15 @@ struct PlanDetailView: View {
             // — this could intermittently crash or drop the search UI when the field is
             // dismissed or cleared.
             VStack(spacing: 0) {
+                if showingFilterBar || filter.isActive {
+                    BoardFilterBar(
+                        filter: $filter,
+                        availableTags: availablePlanTags,
+                        totalCount: planTasks.count,
+                        filteredCount: filteredPlanTasks.count
+                    )
+                    Divider()
+                }
                 GeometryReader { geo in
                     let columnCount = plan.statuses.count
                     let spacing: CGFloat = 20
@@ -789,6 +876,22 @@ struct PlanDetailView: View {
                             Label("Clear Selection", systemImage: "xmark.circle")
                         }
                     }
+                }
+                ToolbarItem(placement: .automatic) {
+                    Button(action: {
+                        withAnimation(.taskToolQuickFeedback) {
+                            showingFilterBar.toggle()
+                        }
+                    }) {
+                        Label(
+                            filter.isActive ? "Filters (\(filter.activeFilterCount))" : "Filter",
+                            systemImage: filter.isActive
+                                ? "line.3.horizontal.decrease.circle.fill"
+                                : "line.3.horizontal.decrease.circle"
+                        )
+                    }
+                    .keyboardShortcut("f", modifiers: [.command, .shift])
+                    .help("Toggle board filters (⌘⇧F)")
                 }
                 ToolbarItem(placement: .primaryAction) {
                     Button(action: { showingNewTask = true }) {
@@ -1276,7 +1379,7 @@ struct TaskCard: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            HStack(alignment: .top) {
+            HStack(alignment: .top, spacing: 6) {
                 Text("#\(task.id.uuidString.prefix(8))")
                     .font(.system(.caption2, design: .monospaced))
                     .foregroundColor(.taskToolSecondaryText)
@@ -1284,6 +1387,35 @@ struct TaskCard: View {
                     .padding(.vertical, 2)
                     .background(Color.secondary.opacity(0.15))
                     .cornerRadius(4)
+
+                if let priority = task.priority {
+                    HStack(spacing: 3) {
+                        Image(systemName: priority.symbolName)
+                            .font(.system(size: 9, weight: .bold))
+                        Text(priority.displayName)
+                            .font(.caption2)
+                            .fontWeight(.semibold)
+                    }
+                    .foregroundColor(Color.from(string: priority.colorName))
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 2)
+                    .background(Color.from(string: priority.colorName).opacity(0.15))
+                    .cornerRadius(4)
+                }
+
+                if let recurrence = task.recurrence {
+                    HStack(spacing: 3) {
+                        Image(systemName: "repeat")
+                            .font(.system(size: 9, weight: .semibold))
+                        Text(recurrence.displayName)
+                            .font(.caption2)
+                    }
+                    .foregroundColor(.purple)
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 2)
+                    .background(Color.purple.opacity(0.12))
+                    .cornerRadius(4)
+                }
 
                 Spacer()
 
@@ -1763,6 +1895,8 @@ struct NewTaskView: View {
     @State private var taskBody = ""
     @State private var taskBodySelection: TextSelection?
     @State private var tags: [String] = []
+    @State private var priority: TaskPriority? = nil
+    @State private var recurrence: TaskRecurrence? = nil
     @State private var dueDate: Date?
     @State private var hasDueDate = false
     @State private var showError = false
@@ -1799,6 +1933,34 @@ struct NewTaskView: View {
                         .background(
                             MarkdownFormattingShortcuts(text: $taskBody, selection: $taskBodySelection, isActive: descriptionFocused)
                         )
+                }
+
+                GridRow(alignment: .firstTextBaseline) {
+                    Text("Priority")
+                        .gridColumnAlignment(.trailing)
+                        .foregroundStyle(.secondary)
+                    Picker("Priority", selection: $priority) {
+                        Text("None").tag(TaskPriority?.none)
+                        ForEach(TaskPriority.allCases, id: \.self) { level in
+                            Text(level.displayName).tag(TaskPriority?.some(level))
+                        }
+                    }
+                    .labelsHidden()
+                    .pickerStyle(.segmented)
+                }
+
+                GridRow(alignment: .firstTextBaseline) {
+                    Text("Repeat")
+                        .gridColumnAlignment(.trailing)
+                        .foregroundStyle(.secondary)
+                    Picker("Repeat", selection: $recurrence) {
+                        Text("Never").tag(TaskRecurrence?.none)
+                        ForEach(TaskRecurrence.allCases, id: \.self) { cadence in
+                            Text(cadence.displayName).tag(TaskRecurrence?.some(cadence))
+                        }
+                    }
+                    .labelsHidden()
+                    .frame(maxWidth: .infinity, alignment: .leading)
                 }
 
                 GridRow(alignment: .firstTextBaseline) {
@@ -1850,6 +2012,8 @@ struct NewTaskView: View {
                         title: title,
                         plan: plan.name,
                         status: defaultStatus,
+                        priority: priority,
+                        recurrence: recurrence,
                         dueDate: hasDueDate ? dueDate : nil,
                         tags: tags,
                         body: taskBody
@@ -1878,6 +2042,8 @@ struct NewTaskViewForStatus: View {
     @State private var taskBody = ""
     @State private var taskBodySelection: TextSelection?
     @State private var tags: [String] = []
+    @State private var priority: TaskPriority? = nil
+    @State private var recurrence: TaskRecurrence? = nil
     @State private var dueDate: Date?
     @State private var hasDueDate = false
     @State private var showError = false
@@ -1915,6 +2081,34 @@ struct NewTaskViewForStatus: View {
                         .background(
                             MarkdownFormattingShortcuts(text: $taskBody, selection: $taskBodySelection, isActive: descriptionFocused)
                         )
+                }
+
+                GridRow(alignment: .firstTextBaseline) {
+                    Text("Priority")
+                        .gridColumnAlignment(.trailing)
+                        .foregroundStyle(.secondary)
+                    Picker("Priority", selection: $priority) {
+                        Text("None").tag(TaskPriority?.none)
+                        ForEach(TaskPriority.allCases, id: \.self) { level in
+                            Text(level.displayName).tag(TaskPriority?.some(level))
+                        }
+                    }
+                    .labelsHidden()
+                    .pickerStyle(.segmented)
+                }
+
+                GridRow(alignment: .firstTextBaseline) {
+                    Text("Repeat")
+                        .gridColumnAlignment(.trailing)
+                        .foregroundStyle(.secondary)
+                    Picker("Repeat", selection: $recurrence) {
+                        Text("Never").tag(TaskRecurrence?.none)
+                        ForEach(TaskRecurrence.allCases, id: \.self) { cadence in
+                            Text(cadence.displayName).tag(TaskRecurrence?.some(cadence))
+                        }
+                    }
+                    .labelsHidden()
+                    .frame(maxWidth: .infinity, alignment: .leading)
                 }
 
                 GridRow(alignment: .firstTextBaseline) {
@@ -1965,6 +2159,8 @@ struct NewTaskViewForStatus: View {
                         title: title,
                         plan: plan.name,
                         status: statusName,
+                        priority: priority,
+                        recurrence: recurrence,
                         dueDate: hasDueDate ? dueDate : nil,
                         tags: tags,
                         body: taskBody
@@ -2731,6 +2927,35 @@ struct TaskDetailView: View {
                         TagInputView(tags: $editedTask.tags)
                     }
                     
+                    // Priority & Recurrence
+                    HStack(alignment: .top, spacing: 20) {
+                        VStack(alignment: .leading, spacing: 8) {
+                            Text("Priority")
+                                .font(.headline)
+                            Picker("Priority", selection: $editedTask.priority) {
+                                Text("None").tag(TaskPriority?.none)
+                                ForEach(TaskPriority.allCases, id: \.self) { level in
+                                    Text(level.displayName).tag(TaskPriority?.some(level))
+                                }
+                            }
+                            .labelsHidden()
+                            .pickerStyle(.segmented)
+                        }
+
+                        VStack(alignment: .leading, spacing: 8) {
+                            Text("Repeat")
+                                .font(.headline)
+                            Picker("Repeat", selection: $editedTask.recurrence) {
+                                Text("Never").tag(TaskRecurrence?.none)
+                                ForEach(TaskRecurrence.allCases, id: \.self) { cadence in
+                                    Text(cadence.displayName).tag(TaskRecurrence?.some(cadence))
+                                }
+                            }
+                            .labelsHidden()
+                            .frame(width: 150)
+                        }
+                    }
+
                     // Due Date
                     VStack(alignment: .leading, spacing: 8) {
                         Toggle("Due Date", isOn: $hasDueDate)

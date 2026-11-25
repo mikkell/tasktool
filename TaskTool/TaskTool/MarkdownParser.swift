@@ -35,6 +35,8 @@ struct MarkdownParser {
         
         let id = metadata["id"] as? String ?? UUID().uuidString
         let status = metadata["status"] as? String ?? "To Do"
+        let priority = (metadata["priority"] as? String).flatMap { TaskPriority(rawValue: $0.lowercased()) }
+        let recurrence = (metadata["recurrence"] as? String).flatMap { TaskRecurrence(rawValue: $0.lowercased()) }
         let tags = metadata["tags"] as? [String] ?? []
         let bundledTaskIDs = (metadata["bundled_task_ids"] as? [String] ?? []).compactMap { UUID(uuidString: $0) }
         let parentBundleID = (metadata["parent_bundle_id"] as? String).flatMap { UUID(uuidString: $0) }
@@ -70,6 +72,8 @@ struct MarkdownParser {
             title: title,
             plan: plan,
             status: status,
+            priority: priority,
+            recurrence: recurrence,
             dueDate: dueDate,
             tags: tags,
             created: created,
@@ -95,6 +99,14 @@ struct MarkdownParser {
         order: \(task.order)
         """
         
+        if let priority = task.priority {
+            frontmatter += "\npriority: \(priority.rawValue)"
+        }
+
+        if let recurrence = task.recurrence {
+            frontmatter += "\nrecurrence: \(recurrence.rawValue)"
+        }
+
         if let dueDate = task.dueDate {
             frontmatter += "\ndue_date: \(dateFormatter.string(from: dueDate))"
         }

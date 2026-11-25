@@ -1022,7 +1022,8 @@ class TaskStore: ObservableObject {
         
         var updatedTask = task
         updatedTask.updated = Date()
-        if !isDoneTask(oldTask) && isDoneTask(updatedTask) {
+        let transitionedToDone = !isDoneTask(oldTask) && isDoneTask(updatedTask)
+        if transitionedToDone {
             updatedTask.completedAt = Date()
         }
         
@@ -1059,6 +1060,59 @@ class TaskStore: ObservableObject {
         tasks[index] = updatedTask
 
         try? registerTags(updatedTask.tags)
+
+        if transitionedToDone, let recurrence = updatedTask.recurrence {
+            spawnNextRecurringTaskIfNeeded(from: updatedTask, recurrence: recurrence)
+        }
+    }
+
+    private func spawnNextRecurringTaskIfNeeded(from completedTask: Task, recurrence: TaskRecurrence) {
+        // Avoid duplicating if an active occurrence with the same title, plan, and cadence already exists.
+        let alreadyActive = tasks.contains { existing in
+            existing.id != completedTask.id
+                && existing.plan == completedTask.plan
+                && existing.title == completedTask.title
+                && existing.recurrence == recurrence
+                && !isDoneTask(existing)
+        }
+        guard !alreadyActive else { return }
+
+        let plan = plans.first(where: { $0.name == completedTask.plan })
+        let sortedStatuses = plan?.statuses.sorted(by: { $0.order < $1.order }) ?? []
+        let initialStatus = sortedStatuses.first(where: { !$0.isDoneStatus })?.name
+            ?? sortedStatuses.first?.name
+            ?? "To Do"
+
+        let referenceDate = completedTask.dueDate ?? Date()
+        let nextDue = recurrence.nextDueDate(from: referenceDate)
+        let resetBody = Self.resetCheckboxes(in: completedTask.body)
+
+        let nextTask = Task(
+            title: completedTask.title,
+            plan: completedTask.plan,
+            status: initialStatus,
+            priority: completedTask.priority,
+            recurrence: recurrence,
+            dueDate: nextDue,
+            tags: completedTask.tags,
+            body: resetBody
+        )
+        try? createTask(nextTask)
+    }
+
+    /// Resets completed Markdown task checkboxes (`- [x]` / `- [X]`) to unchecked (`- [ ]`)
+    /// so recurring checklists start fresh on the next occurrence.
+    static func resetCheckboxes(in body: String) -> String {
+        body
+            .components(separatedBy: .newlines)
+            .map { line in
+                if let range = line.range(of: #"^(\s*[-*+]\s+)\[[xX]\]"#, options: .regularExpression) {
+                    let prefix = line[range].dropLast(3)
+                    return String(prefix) + "[ ]" + line[range.upperBound...]
+                }
+                return line
+            }
+            .joined(separator: "\n")
     }
 
     @discardableResult

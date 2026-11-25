@@ -5,14 +5,19 @@
 
 import SwiftUI
 import UniformTypeIdentifiers
+import UserNotifications
 
 struct SettingsView: View {
     @EnvironmentObject var taskStore: TaskStore
+    @EnvironmentObject var notificationManager: TaskNotificationManager
     var body: some View {
         TabView {
             GeneralSettingsTab()
                 .disabled(taskStore.isSyncing)
                 .tabItem { Label("General", systemImage: "gearshape") }
+
+            NotificationsSettingsTab()
+                .tabItem { Label("Notifications", systemImage: "bell.badge") }
 
             ShortcutsSettingsTab()
                 .tabItem { Label("Shortcuts", systemImage: "keyboard") }
@@ -27,7 +32,7 @@ struct SettingsView: View {
             GitSyncSettingsTab()
                 .tabItem { Label("Git Sync", systemImage: "arrow.triangle.2.circlepath") }
         }
-        .frame(width: 480)
+        .frame(width: 520)
         .fixedSize()
     }
 }
@@ -121,8 +126,11 @@ struct ShortcutsSettingsTab: View {
     var body: some View {
         Form {
             Section("Plans & Tasks") {
+                ShortcutRow(keys: ["⌘", "K"], description: "Open Command Palette")
                 ShortcutRow(keys: ["⌘", "N"], description: "New Task")
                 ShortcutRow(keys: ["⌘", "F"], description: "Search tasks in plan")
+                ShortcutRow(keys: ["⌘", "⇧", "F"], description: "Toggle board filters")
+                ShortcutRow(keys: ["⌘", "1–9"], description: "Switch to plan by position")
             }
 
             Section("Editing") {
@@ -137,7 +145,108 @@ struct ShortcutsSettingsTab: View {
         }
         .formStyle(.grouped)
         .padding()
-        .frame(minHeight: 260)
+        .frame(minHeight: 280)
+    }
+}
+
+// MARK: - Notifications
+
+struct NotificationsSettingsTab: View {
+    @EnvironmentObject var notificationManager: TaskNotificationManager
+    @State private var sentTest = false
+
+    private var reminderTimeBinding: Binding<Date> {
+        Binding(
+            get: {
+                var components = DateComponents()
+                components.hour = notificationManager.preferences.reminderHour
+                components.minute = notificationManager.preferences.reminderMinute
+                return Calendar.current.date(from: components) ?? Date()
+            },
+            set: { newDate in
+                let comps = Calendar.current.dateComponents([.hour, .minute], from: newDate)
+                notificationManager.preferences.reminderHour = comps.hour ?? 9
+                notificationManager.preferences.reminderMinute = comps.minute ?? 0
+            }
+        )
+    }
+
+    var body: some View {
+        Form {
+            Section {
+                Toggle(
+                    "Enable Local Reminders",
+                    isOn: Binding(
+                        get: { notificationManager.preferences.isEnabled },
+                        set: { notificationManager.setEnabled($0) }
+                    )
+                )
+
+                if notificationManager.authorizationStatus == .denied {
+                    HStack {
+                        Text("Notifications are disabled in macOS System Settings.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        Spacer()
+                        Button("Open Settings") {
+                            if let url = URL(string: "x-apple.systempreferences:com.apple.Notifications-Settings.extension") {
+                                NSWorkspace.shared.open(url)
+                            }
+                        }
+                        .controlSize(.small)
+                    }
+                }
+            }
+
+            Section("Schedule") {
+                DatePicker(
+                    "Daily reminder time",
+                    selection: reminderTimeBinding,
+                    displayedComponents: .hourAndMinute
+                )
+                .disabled(!notificationManager.preferences.isEnabled)
+
+                Toggle("Due date reminders", isOn: $notificationManager.preferences.notifyDueTasks)
+                    .disabled(!notificationManager.preferences.isEnabled)
+
+                Toggle("Follow-up ping reminders", isOn: $notificationManager.preferences.notifyStalePings)
+                    .disabled(!notificationManager.preferences.isEnabled)
+
+                if notificationManager.preferences.notifyStalePings {
+                    Stepper(
+                        value: $notificationManager.preferences.stalePingDays,
+                        in: 1...14
+                    ) {
+                        let days = notificationManager.preferences.stalePingDays
+                        Text("Remind \(days) day\(days == 1 ? "" : "s") after last ping")
+                    }
+                    .disabled(!notificationManager.preferences.isEnabled)
+                }
+            }
+
+            Section {
+                HStack {
+                    Text("\(notificationManager.scheduledCount) reminder\(notificationManager.scheduledCount == 1 ? "" : "s") scheduled")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                    Button(sentTest ? "Sent!" : "Send Test Notification") {
+                        notificationManager.sendTestNotification()
+                        sentTest = true
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
+                            sentTest = false
+                        }
+                    }
+                    .disabled(!notificationManager.preferences.isEnabled)
+                }
+            }
+        }
+        .formStyle(.grouped)
+        .padding()
+        .frame(minHeight: 280)
+        .onAppear {
+            notificationManager.refreshAuthorizationStatus()
+        }
     }
 }
 

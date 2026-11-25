@@ -62,6 +62,8 @@ enum TaskSyncMerge {
                 result.task.title = merge("title", ancestor.task.title, left.task.title, right.task.title)
                 result.task.plan = merge("plan", ancestor.task.plan, left.task.plan, right.task.plan)
                 result.task.status = merge("status", ancestor.task.status, left.task.status, right.task.status)
+                result.task.priority = merge("priority", ancestor.task.priority, left.task.priority, right.task.priority)
+                result.task.recurrence = merge("recurrence", ancestor.task.recurrence, left.task.recurrence, right.task.recurrence)
                 result.task.dueDate = merge("dueDate", ancestor.task.dueDate, left.task.dueDate, right.task.dueDate)
                 result.task.tags = merge("tags", ancestor.task.tags, left.task.tags, right.task.tags)
                 result.task.created = merge("created", ancestor.task.created, left.task.created, right.task.created)

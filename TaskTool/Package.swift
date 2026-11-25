@@ -20,13 +20,14 @@ let package = Package(
             ],
             path: "TaskTool",
             exclude: [
-                "Assets.xcassets", "ContentView.swift", "Item.swift",
+                "Assets.xcassets", "BoardFilterBar.swift", "CommandPaletteView.swift", "ContentView.swift", "Item.swift",
                 "OutlookEmailDrop.swift", "OverviewView.swift",
-                "Readability.swift", "SettingsView.swift", "GitSyncSettingsTab.swift", "TaskStore.swift",
+                "Readability.swift", "SettingsView.swift", "GitSyncSettingsTab.swift",
+                "TaskNotificationManager.swift", "TaskStore.swift",
                 "TaskTool.entitlements", "TaskToolApp.swift"
             ],
             sources: [
-                "Task.swift", "Plan.swift", "Settings.swift",
+                "Task.swift", "Plan.swift", "Settings.swift", "TaskBoardFilter.swift", "NotificationPlanner.swift",
                 "MarkdownParser.swift", "TaskSyncMerge.swift", "RepositorySyncMerge.swift",
                 "GitHubCredentials.swift", "GitSyncFiles.swift", "EmbeddedGitRepository.swift", "GitSyncClient.swift",
                 "MobileTaskStore.swift", "AutoSyncScheduler.swift", "MarkdownPreview.swift"
